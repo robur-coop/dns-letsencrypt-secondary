@@ -33,17 +33,18 @@ let keys = Key.[
 
 let packages =
   [
-    package ~min:"0.9.0" "x509" ;
-    package "duration" ;
-    package "logs" ;
-    package ~min:"4.0.0" "cohttp-mirage" ;
+    package ~min:"0.9.0" "x509";
+    package "duration";
+    package "logs";
+    package ~min:"4.0.0" "cohttp-mirage";
     package ~min:"0.2.1" "letsencrypt" ;
-    package ~min:"2.3.0" "conduit-mirage" ;
+    package ~min:"2.3.0" "conduit-mirage";
     package "dns-tsig";
     package ~min:"4.6.0" "dns-certify";
     package ~min:"4.4.0" ~sublibs:[ "mirage" ] "dns-server";
-    package "randomconv" ;
-    package ~min:"0.3.0" "domain-name"
+    package "randomconv";
+    package ~min:"0.3.0" "domain-name";
+    package ~min:"3.10.2" "mirage-runtime";
 ]
 
 let client =
