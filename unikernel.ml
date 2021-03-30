@@ -4,8 +4,8 @@ open Lwt.Infix
 
 open Dns
 
-module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.MCLOCK) (T : Mirage_time.S) (S : Mirage_stack.V4) (RES: Resolver_lwt.S) (CON: Conduit_mirage.S)= struct
-  module Acme = Letsencrypt.Client.Make(Cohttp_mirage.Client)
+module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.MCLOCK) (T : Mirage_time.S) (S : Mirage_stack.V4) (Http_client: Cohttp_lwt.S.Client) = struct
+  module Acme = Letsencrypt.Client.Make(Http_client)
 
   module D = Dns_mirage.Make(S)
   module DS = Dns_server_mirage.Make(P)(M)(T)(S)
@@ -93,7 +93,7 @@ module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.
                      Domain_name.pp name);
         None
 
-  let start _random _pclock _mclock _ stack res ctx =
+  let start _random _pclock _mclock _ stack ctx =
     let keyname, keyzone, dnskey =
       match Dnskey.name_key_of_string (Key_gen.dns_key ()) with
       | Error (`Msg msg) -> Logs.err (fun m -> m "couldn't parse dnskey: %s" msg) ; exit 64
@@ -270,8 +270,6 @@ module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.
     in
 
     let account_key = gen_rsa (Key_gen.account_key_seed ()) in
-    Conduit_mirage.with_tls ctx >>= fun ctx ->
-    let ctx = Cohttp_mirage.Client.ctx res ctx in
     let endpoint =
       if Key_gen.production () then begin
         Logs.warn (fun m -> m "production environment - take care what you do");

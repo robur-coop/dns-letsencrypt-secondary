@@ -36,9 +36,9 @@ let packages =
     package ~min:"0.9.0" "x509" ;
     package "duration" ;
     package "logs" ;
-    package "cohttp-mirage" ;
+    package ~min:"4.0.0" "cohttp-mirage" ;
     package ~min:"0.2.1" "letsencrypt" ;
-    package "conduit-mirage" ;
+    package ~min:"2.3.0" "conduit-mirage" ;
     package "dns-tsig";
     package ~min:"4.6.0" "dns-certify";
     package ~min:"4.4.0" ~sublibs:[ "mirage" ] "dns-server";
@@ -48,11 +48,11 @@ let packages =
 
 let client =
   foreign ~keys ~packages "Unikernel.Client" @@
-  random @-> pclock @-> mclock @-> time @-> stackv4 @-> resolver @-> conduit @-> job
+  random @-> pclock @-> mclock @-> time @-> stackv4 @-> http_client @-> job
 
 let () =
   let net = generic_stackv4 default_network in
   let res_dns = resolver_dns net in
-  let conduit = conduit_direct net in
+  let conduit = conduit_direct ~tls:true net in
   register "letsencrypt"
-    [ client $ default_random $ default_posix_clock $ default_monotonic_clock $ default_time $ net $ res_dns $ conduit ]
+    [ client $ default_random $ default_posix_clock $ default_monotonic_clock $ default_time $ net $ cohttp_client res_dns conduit ]
