@@ -4,15 +4,17 @@ open Lwt.Infix
 
 open Dns
 
-module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.MCLOCK) (T : Mirage_time.S) (S : Mirage_stack.V4) (Http_client: Cohttp_lwt.S.Client) = struct
+module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.MCLOCK) (T : Mirage_time.S) (S : Mirage_stack.V4V6) (Http_client: Cohttp_lwt.S.Client) = struct
   module Acme = Letsencrypt.Client.Make(Http_client)
 
   module D = Dns_mirage.Make(S)
   module DS = Dns_server_mirage.Make(P)(M)(T)(S)
 
   let gen_rsa seed =
-    let seed = Cstruct.of_string seed in
-    let g = Mirage_crypto_rng.(create ~seed (module Mirage_crypto_rng.Fortuna)) in
+    let seed =
+      match seed with None -> None | Some s -> Some (Cstruct.of_string s)
+    in
+    let g = Mirage_crypto_rng.(create ?seed (module Fortuna)) in
     Mirage_crypto_pk.Rsa.generate ~g ~bits:4096 ()
 
   (* act as a hidden dns secondary and receive notifies, sweep through the zone for signing requests without corresponding (non-expired) certificate
@@ -95,18 +97,24 @@ module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.
 
   let start _random _pclock _mclock _ stack ctx =
     let keyname, keyzone, dnskey =
-      match Dnskey.name_key_of_string (Key_gen.dns_key ()) with
-      | Error (`Msg msg) -> Logs.err (fun m -> m "couldn't parse dnskey: %s" msg) ; exit 64
-      | Ok (keyname, dnskey) ->
-        match Domain_name.find_label keyname (function "_update" -> true | _ -> false) with
-        | None -> Logs.err (fun m -> m "dnskey is not an update key") ; exit 64
-        | Some idx ->
-          let amount = succ idx in
-          let zone = Domain_name.(host_exn (drop_label_exn ~amount keyname)) in
-          Logs.app (fun m -> m "using key %a for zone %a" Domain_name.pp keyname Domain_name.pp zone);
-          keyname, zone, dnskey
+      match Key_gen.dns_key () with
+      | None -> Logs.err (fun m -> m "no dnskey provided") ; exit 64
+      | Some k -> match Dnskey.name_key_of_string k with
+        | Error (`Msg msg) -> Logs.err (fun m -> m "couldn't parse dnskey: %s" msg) ; exit 64
+        | Ok (keyname, dnskey) ->
+          match Domain_name.find_label keyname (function "_update" -> true | _ -> false) with
+          | None -> Logs.err (fun m -> m "dnskey is not an update key") ; exit 64
+          | Some idx ->
+            let amount = succ idx in
+            let zone = Domain_name.(host_exn (drop_label_exn ~amount keyname)) in
+            Logs.app (fun m -> m "using key %a for zone %a" Domain_name.pp keyname Domain_name.pp zone);
+            keyname, zone, dnskey
     in
-    let dns_server = Key_gen.dns_server () in
+    let dns_server =
+      match Key_gen.dns_server () with
+      | None -> Logs.err (fun m -> m "no DNS server provided") ; exit 64
+      | Some s -> s
+    in
     let dns_state = ref
         (Dns_server.Secondary.create ~primary:dns_server ~rng:R.generate
            ~tsig_verify:Dns_tsig.verify ~tsig_sign:Dns_tsig.sign [ keyname, dnskey ])
@@ -115,16 +123,16 @@ module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.
        (secondary logic cares about zone transfer key) *)
     let flow = ref None in
     let send_dns data =
-      Logs.debug (fun m -> m "writing to %a" Ipaddr.V4.pp dns_server) ;
-      let tcp = S.tcpv4 stack in
+      Logs.debug (fun m -> m "writing to %a" Ipaddr.pp dns_server) ;
+      let tcp = S.tcp stack in
       let rec send again =
         match !flow with
         | None ->
           if again then
-            S.TCPV4.create_connection tcp (dns_server, Key_gen.port ()) >>= function
+            S.TCP.create_connection tcp (dns_server, Key_gen.port ()) >>= function
             | Error e ->
-              Logs.err (fun m -> m "failed to create connection to NS: %a" S.TCPV4.pp_error e) ;
-              Lwt.return (Error (`Msg (Fmt.to_to_string S.TCPV4.pp_error e)))
+              Logs.err (fun m -> m "failed to create connection to NS: %a" S.TCP.pp_error e) ;
+              Lwt.return (Error (`Msg (Fmt.to_to_string S.TCP.pp_error e)))
             | Ok f -> flow := Some (D.of_flow f) ; send false
           else
             Lwt.return_error (`Msg "couldn't reach authoritative nameserver")
