@@ -4,11 +4,11 @@ open Mirage
 
 let dns_key =
   let doc = Key.Arg.info ~doc:"nsupdate key (name:type:value,...)" ["dns-key"] in
-  Key.(create "dns-key" Arg.(opt (some string) None doc))
+  Key.(create "dns-key" Arg.(required string doc))
 
 let dns_server =
   let doc = Key.Arg.info ~doc:"dns server IP" ["dns-server"] in
-  Key.(create "dns-server" Arg.(opt (some ip_address) None doc))
+  Key.(create "dns-server" Arg.(required ip_address doc))
 
 let port =
   let doc = Key.Arg.info ~doc:"dns server port" ["port"] in
@@ -16,7 +16,7 @@ let port =
 
 let account_key_seed =
   let doc = Key.Arg.info ~doc:"account key seed" ["account-key-seed"] in
-  Key.(create "account-key-seed" Arg.(opt (some string) None doc))
+  Key.(create "account-key-seed" Arg.(required string doc))
 
 let production =
   let doc = Key.Arg.info ~doc:"Use the production let's encrypt servers" ["production"] in
