@@ -4,11 +4,11 @@ open Mirage
 
 let dns_key =
   let doc = Key.Arg.info ~doc:"nsupdate key (name:type:value,...)" ["dns-key"] in
-  Key.(create "dns-key" Arg.(opt string "" doc))
+  Key.(create "dns-key" Arg.(opt (some string) None doc))
 
 let dns_server =
   let doc = Key.Arg.info ~doc:"dns server IP" ["dns-server"] in
-  Key.(create "dns-server" Arg.(opt ipv4_address Ipaddr.V4.localhost doc))
+  Key.(create "dns-server" Arg.(opt (some ip_address) None doc))
 
 let port =
   let doc = Key.Arg.info ~doc:"dns server port" ["port"] in
@@ -16,7 +16,7 @@ let port =
 
 let account_key_seed =
   let doc = Key.Arg.info ~doc:"account key seed" ["account-key-seed"] in
-  Key.(create "account-key-seed" Arg.(opt string "" doc))
+  Key.(create "account-key-seed" Arg.(opt (some string) None doc))
 
 let production =
   let doc = Key.Arg.info ~doc:"Use the production let's encrypt servers" ["production"] in
@@ -33,26 +33,26 @@ let keys = Key.[
 
 let packages =
   [
-    package ~min:"0.9.0" "x509";
+    package ~min:"0.13.0" "x509";
     package "duration";
     package "logs";
     package ~min:"4.0.0" "cohttp-mirage";
-    package ~min:"0.2.1" "letsencrypt" ;
-    package ~min:"2.3.0" "conduit-mirage";
+    package ~min:"0.2.5" "letsencrypt" ;
+    package ~min:"4.0.0" "conduit-mirage";
     package "dns-tsig";
-    package ~min:"4.6.0" "dns-certify";
-    package ~min:"4.4.0" ~sublibs:[ "mirage" ] "dns-server";
+    package ~min:"5.0.1" "dns-certify";
+    package ~min:"5.0.0" ~sublibs:[ "mirage" ] "dns-server";
     package "randomconv";
     package ~min:"0.3.0" "domain-name";
-    package ~min:"3.10.2" "mirage-runtime";
+    package ~min:"3.10.4" "mirage-runtime";
 ]
 
 let client =
   foreign ~keys ~packages "Unikernel.Client" @@
-  random @-> pclock @-> mclock @-> time @-> stackv4 @-> http_client @-> job
+  random @-> pclock @-> mclock @-> time @-> stackv4v6 @-> http_client @-> job
 
 let () =
-  let net = generic_stackv4 default_network in
+  let net = generic_stackv4v6 default_network in
   let res_dns = resolver_dns net in
   let conduit = conduit_direct ~tls:true net in
   register "letsencrypt"
