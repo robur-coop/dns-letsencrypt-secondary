@@ -5,7 +5,18 @@ open Lwt.Infix
 open Dns
 
 module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.MCLOCK) (T : Mirage_time.S) (S : Mirage_stack.V4V6) (Http_client: Cohttp_lwt.S.Client) = struct
-  module Acme = Letsencrypt.Client.Make(Http_client)
+  module HTTP_client = struct
+    module Headers = Cohttp.Header
+    module Body = Cohttp_lwt.Body
+
+    module Response = struct
+      include Cohttp.Response
+      let status resp = Cohttp.Code.code_of_status (Cohttp.Response.status resp)
+    end
+
+    include Http_client
+  end
+  module Acme = Letsencrypt.Client.Make(HTTP_client)
 
   module D = Dns_mirage.Make(S)
   module DS = Dns_server_mirage.Make(P)(M)(T)(S)
@@ -175,7 +186,7 @@ module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.
             let sleep n = T.sleep_ns (Duration.of_sec n) in
             let now () = Ptime.v (P.now_d_ps ()) in
             let id = Randomconv.int16 R.generate in
-            let solver = Letsencrypt.Client.nsupdate ~proto:`Tcp id now send_dns ~recv:recv_dns ~zone:keyzone ~keyname dnskey in
+            let solver = Letsencrypt_dns.nsupdate ~proto:`Tcp id now send_dns ~recv:recv_dns ~zone:keyzone ~keyname dnskey in
             Acme.sign_certificate ~ctx solver le sleep csr >>= function
             | Error (`Msg e) ->
               Logs.err (fun m -> m "error %s while signing %a" e Domain_name.pp tlsa_name);

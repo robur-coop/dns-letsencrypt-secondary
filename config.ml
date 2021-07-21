@@ -37,7 +37,8 @@ let packages =
     package "duration";
     package "logs";
     package ~min:"4.0.0" "cohttp-mirage";
-    package ~min:"0.2.5" "letsencrypt" ;
+    package ~min:"0.3.0" "letsencrypt" ;
+    package ~min:"0.3.0" "letsencrypt-dns" ;
     package ~min:"4.0.0" "conduit-mirage";
     package "dns-tsig";
     package ~min:"5.0.1" "dns-certify";
