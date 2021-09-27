@@ -4,6 +4,8 @@ open Lwt.Infix
 
 open Dns
 
+let argument_error = 64
+
 module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.MCLOCK) (T : Mirage_time.S) (S : Mirage_stack.V4V6) (Http_client: Cohttp_lwt.S.Client) = struct
   module HTTP_client = struct
     module Headers = Cohttp.Header
@@ -20,11 +22,6 @@ module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.
 
   module D = Dns_mirage.Make(S)
   module DS = Dns_server_mirage.Make(P)(M)(T)(S)
-
-  let gen_rsa seed =
-    let seed = Cstruct.of_string seed in
-    let g = Mirage_crypto_rng.(create ~seed (module Fortuna)) in
-    Mirage_crypto_pk.Rsa.generate ~g ~bits:4096 ()
 
   (* act as a hidden dns secondary and receive notifies, sweep through the zone for signing requests without corresponding (non-expired) certificate
 
@@ -107,10 +104,10 @@ module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.
   let start _random _pclock _mclock _ stack ctx =
     let keyname, keyzone, dnskey =
       match Dnskey.name_key_of_string (Key_gen.dns_key ()) with
-      | Error (`Msg msg) -> Logs.err (fun m -> m "couldn't parse dnskey: %s" msg) ; exit 64
+      | Error (`Msg msg) -> Logs.err (fun m -> m "couldn't parse dnskey: %s" msg) ; exit argument_error
       | Ok (keyname, dnskey) ->
         match Domain_name.find_label keyname (function "_update" -> true | _ -> false) with
-        | None -> Logs.err (fun m -> m "dnskey is not an update key") ; exit 64
+        | None -> Logs.err (fun m -> m "dnskey is not an update key") ; exit argument_error
         | Some idx ->
           let amount = succ idx in
           let zone = Domain_name.(host_exn (drop_label_exn ~amount keyname)) in
@@ -280,7 +277,18 @@ module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.
       end
     in
 
-    let account_key = gen_rsa (Key_gen.account_key_seed ()) in
+    let account_key =
+      let seed = Cstruct.of_string (Key_gen.account_key_seed ()) in
+      let key_type =
+        let kt = Key_gen.account_key_type () in
+        match X509.Key_type.of_string kt with
+        | Ok kt -> kt
+        | Error `Msg msg ->
+          Logs.err (fun m -> m "cannot decode key type %s: %s" kt msg);
+          exit argument_error
+      in
+      X509.Private_key.generate ~seed ~bits:(Key_gen.account_bits ()) key_type
+    in
     let endpoint =
       if Key_gen.production () then begin
         Logs.warn (fun m -> m "production environment - take care what you do");
