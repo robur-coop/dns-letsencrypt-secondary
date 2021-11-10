@@ -13,8 +13,8 @@ This can be used with [dns-primary-git](https://github.com/roburio/dns-primary-g
 
 To install this unikernel from source, you need to have
 [opam](https://opam.ocaml.org) (>= 2.0.0) and
-[ocaml](https://ocaml.org) (>= 4.07.0) installed. Also,
-[mirage](https://mirageos.org) is required (>= 3.7.7). Please follow the
+[ocaml](https://ocaml.org) (>= 4.08.0) installed. Also,
+[mirage](https://mirageos.org) is required (>= 3.10.6). Please follow the
 [installation instructions](https://mirageos.org/wiki/install).
 
 The following steps will clone this git repository and compile the unikernel:
@@ -28,8 +28,10 @@ $ make
 
 ## Installing as binary
 
-There are not yet any binaries available, but work is underway to provide
-reproducible binaries.
+Binaries are available at [Reproducible OPAM
+builds](https://builds.robur.coop/), see [Deploying binary MirageOS
+unikernels](https://hannes.robur.coop/Posts/Deploy) and [Reproducible MirageOS
+unikernel builds](https://hannes.robur.coop/Posts/ReproducibleOPAM) for details.
 
 ## Questions?
 

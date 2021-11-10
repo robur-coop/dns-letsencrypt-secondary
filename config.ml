@@ -49,7 +49,7 @@ let packages =
     package ~min:"4.0.0" "cohttp-mirage";
     package ~min:"0.4.0" "letsencrypt" ;
     package ~min:"0.4.0" "letsencrypt-dns" ;
-    package ~min:"4.0.0" "conduit-mirage";
+    package ~min:"5.0.0" "conduit-mirage";
     package "dns-tsig";
     package ~min:"5.0.1" "dns-certify";
     package ~min:"5.0.0" ~sublibs:[ "mirage" ] "dns-server";

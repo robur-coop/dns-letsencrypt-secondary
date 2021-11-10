@@ -160,13 +160,13 @@ module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.
          Logs.info (fun m -> m "adding %a to in_flight" Domain_name.pp n);
          in_flight := Domain_name.Set.add n !in_flight ;
          Logs.debug (fun m -> m "in_flight is %a"
-                        Fmt.(list ~sep:(unit ",@ ") Domain_name.pp)
+                        Fmt.(list ~sep:(any ",@ ") Domain_name.pp)
                         (Domain_name.Set.elements !in_flight))),
       (fun n ->
          Logs.info (fun m -> m "removing %a from in_flight" Domain_name.pp n);
          in_flight := Domain_name.Set.remove n !in_flight ;
          Logs.debug (fun m -> m "in_flight is %a"
-                        Fmt.(list ~sep:(unit ",@ ") Domain_name.pp)
+                        Fmt.(list ~sep:(any ",@ ") Domain_name.pp)
                         (Domain_name.Set.elements !in_flight)))
     in
     let request_certificate server le ctx ~tlsa_name csr =
