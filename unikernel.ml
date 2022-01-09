@@ -6,7 +6,7 @@ open Dns
 
 let argument_error = 64
 
-module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.MCLOCK) (T : Mirage_time.S) (S : Mirage_stack.V4V6) (Http_client: Cohttp_lwt.S.Client) = struct
+module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.MCLOCK) (T : Mirage_time.S) (S : Tcpip.Stack.V4V6) (Http_client: Cohttp_lwt.S.Client) = struct
   module HTTP_client = struct
     module Headers = Cohttp.Header
     module Body = Cohttp_lwt.Body
