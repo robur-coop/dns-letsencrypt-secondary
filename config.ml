@@ -35,10 +35,10 @@ let email =
   Key.(create "email" Arg.(opt (some string) None doc))
 
 let keys = Key.[
-    abstract dns_key ; abstract dns_server ; abstract port ;
-    abstract production ;
-    abstract account_key_seed ; abstract account_key_type ;
-    abstract account_bits ; abstract email
+    v dns_key ; v dns_server ; v port ;
+    v production ;
+    v account_key_seed ; v account_key_type ;
+    v account_bits ; v email
   ]
 
 let packages =
