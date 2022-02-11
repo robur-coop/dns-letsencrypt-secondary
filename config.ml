@@ -55,7 +55,7 @@ let packages =
     package ~min:"5.0.0" ~sublibs:[ "mirage" ] "dns-server";
     package "randomconv";
     package ~min:"0.3.0" "domain-name";
-    package ~min:"3.10.4" "mirage-runtime";
+    package ~min:"4.0.0" "mirage-runtime";
 ]
 
 let client =
