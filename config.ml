@@ -35,10 +35,10 @@ let email =
   Key.(create "email" Arg.(opt (some string) None doc))
 
 let keys = Key.[
-    abstract dns_key ; abstract dns_server ; abstract port ;
-    abstract production ;
-    abstract account_key_seed ; abstract account_key_type ;
-    abstract account_bits ; abstract email
+    v dns_key ; v dns_server ; v port ;
+    v production ;
+    v account_key_seed ; v account_key_type ;
+    v account_bits ; v email
   ]
 
 let packages =
@@ -55,7 +55,7 @@ let packages =
     package ~min:"5.0.0" ~sublibs:[ "mirage" ] "dns-server";
     package "randomconv";
     package ~min:"0.3.0" "domain-name";
-    package ~min:"3.10.4" "mirage-runtime";
+    package ~min:"4.0.0" "mirage-runtime";
 ]
 
 let client =
