@@ -328,8 +328,12 @@ module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.
         Lwt.return_unit
       in
       Lwt.async (fun () ->
-          T.sleep_ns (Duration.of_day 1) >>= fun () ->
-          on_update ~old:(Dns_server.Secondary.data !dns_state) !dns_state);
+          let rec forever () =
+            T.sleep_ns (Duration.of_day 1) >>= fun () ->
+            on_update ~old:(Dns_server.Secondary.data !dns_state) !dns_state >>= fun () ->
+            forever ()
+          in
+          forever ());
       DS.secondary ~on_update stack !dns_state ;
       S.listen stack
 end
