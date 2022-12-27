@@ -4,7 +4,11 @@ open Lwt.Infix
 
 open Dns
 
-let argument_error = 64
+let err_to_exit ~prefix = function
+  | Ok x -> x
+  | Error `Msg msg ->
+    Logs.err (fun m -> m "error in %s: %s" prefix msg);
+    exit Mirage_runtime.argument_error
 
 module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.MCLOCK) (T : Mirage_time.S) (S : Tcpip.Stack.V4V6) (Http_client: Cohttp_lwt.S.Client) = struct
   module HTTP_client = struct
@@ -103,16 +107,20 @@ module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.
 
   let start _random _pclock _mclock _ stack ctx =
     let keyname, keyzone, dnskey =
-      match Dnskey.name_key_of_string (Key_gen.dns_key ()) with
-      | Error (`Msg msg) -> Logs.err (fun m -> m "couldn't parse dnskey: %s" msg) ; exit argument_error
-      | Ok (keyname, dnskey) ->
-        match Domain_name.find_label keyname (function "_update" -> true | _ -> false) with
-        | None -> Logs.err (fun m -> m "dnskey is not an update key") ; exit argument_error
-        | Some idx ->
-          let amount = succ idx in
-          let zone = Domain_name.(host_exn (drop_label_exn ~amount keyname)) in
-          Logs.app (fun m -> m "using key %a for zone %a" Domain_name.pp keyname Domain_name.pp zone);
-          keyname, zone, dnskey
+      let keyname, dnskey =
+        err_to_exit ~prefix:"couldn't parse dnskey"
+          (Dnskey.name_key_of_string (Key_gen.dns_key ()))
+      in
+      let idx =
+        err_to_exit ~prefix:"dnskey is not an update key"
+          (Option.to_result
+             ~none:(`Msg "couldn't find _update label")
+             (Domain_name.find_label keyname (function "_update" -> true | _ -> false)))
+      in
+      let amount = succ idx in
+      let zone = Domain_name.(host_exn (drop_label_exn ~amount keyname)) in
+      Logs.app (fun m -> m "using key %a for zone %a" Domain_name.pp keyname Domain_name.pp zone);
+      keyname, zone, dnskey
     in
     let dns_server = Key_gen.dns_server () in
     let dns_state = ref
@@ -278,16 +286,14 @@ module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.
     in
 
     let account_key =
-      let seed = Cstruct.of_string (Key_gen.account_key_seed ()) in
       let key_type =
-        let kt = Key_gen.account_key_type () in
-        match X509.Key_type.of_string kt with
-        | Ok kt -> kt
-        | Error `Msg msg ->
-          Logs.err (fun m -> m "cannot decode key type %s: %s" kt msg);
-          exit argument_error
+        err_to_exit
+          ~prefix:"cannot decode key type"
+          (X509.Key_type.of_string (Key_gen.account_key_type ()))
       in
-      X509.Private_key.generate ~seed ~bits:(Key_gen.account_bits ()) key_type
+      err_to_exit
+        ~prefix:"couldn't generate account key"
+        (X509.Private_key.of_string ~bits:(Key_gen.account_bits ()) key_type (Key_gen.account_key_seed ()))
     in
     let endpoint =
       if Key_gen.production () then begin
@@ -299,41 +305,41 @@ module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.
       end
     in
     let email = Key_gen.email () in
-    Acme.initialise ~ctx ~endpoint ?email account_key >>= function
-    | Error (`Msg e) -> Logs.err (fun m -> m "error %s" e) ; Lwt.return_unit
-    | Ok le ->
-      Logs.info (fun m -> m "initialised lets encrypt");
+    Acme.initialise ~ctx ~endpoint ?email account_key >>= fun r ->
+    let le = err_to_exit ~prefix:"couldn't initialize ACME" r in
+    Logs.info (fun m -> m "initialised lets encrypt");
 
-      let on_update ~old:_ t =
-        dns_state := t;
-        (* what to do here?
-             foreach _changed_ TLSA record (can as well just do all for now)
-             - if it starts with _letsencrypt._tcp (needs domain_name API)
-             - if we have an update key for this zone
-             - look whether there's 1 CSR and 0 CERT, and act
-           --> can be achieved by fold, but how to extract "update key for zone"?
-             -> data structure update_keys is a map zone -> (keyname, dnskey)
-             -> for a TLSA (_letsencrypt._tcp.<host>):
-               -> let zone = drop two labels
-               -> lookup zone in update_keys, rinse repeat with zone dropping labels *)
-        let trie = Dns_server.Secondary.data t in
-        Dns_trie.fold Dns.Rr_map.Tlsa trie
-          (fun name (_, tlsas) () ->
-             if Dns_certify.is_name name then
-               match contains_csr_without_certificate name tlsas with
-               | None -> Logs.debug (fun m -> m "not interesting (does not contain CSR without valid certificate) %a" Domain_name.pp name)
-               | Some csr -> request_certificate t le ctx ~tlsa_name:name csr
-             else
-               Logs.debug (fun m -> m "name not interesting %a" Domain_name.pp name)) ();
-        Lwt.return_unit
-      in
-      Lwt.async (fun () ->
-          let rec forever () =
-            T.sleep_ns (Duration.of_day 1) >>= fun () ->
-            on_update ~old:(Dns_server.Secondary.data !dns_state) !dns_state >>= fun () ->
-            forever ()
-          in
-          forever ());
-      DS.secondary ~on_update stack !dns_state ;
-      S.listen stack
+    let on_update ~old:_ t =
+      dns_state := t;
+      (* what to do here?
+         foreach _changed_ TLSA record (can as well just do all for now)
+         - if it starts with _letsencrypt._tcp (needs domain_name API)
+         - if we have an update key for this zone
+         - look whether there's 1 CSR and 0 CERT, and act
+         --> can be achieved by fold, but how to extract "update key for zone"?
+         -> data structure update_keys is a map zone -> (keyname, dnskey)
+         -> for a TLSA (_letsencrypt._tcp.<host>):
+         -> let zone = drop two labels
+         -> lookup zone in update_keys, rinse repeat with zone dropping labels *)
+      let trie = Dns_server.Secondary.data t in
+      Dns_trie.fold Dns.Rr_map.Tlsa trie
+        (fun name (_, tlsas) () ->
+           if Dns_certify.is_name name then
+             match contains_csr_without_certificate name tlsas with
+             | None -> Logs.debug (fun m -> m "not interesting (does not contain CSR without valid certificate) %a" Domain_name.pp name)
+             | Some csr -> request_certificate t le ctx ~tlsa_name:name csr
+           else
+             Logs.debug (fun m -> m "name not interesting %a" Domain_name.pp name)) ();
+      Lwt.return_unit
+    in
+
+    Lwt.async (fun () ->
+        let rec forever () =
+          T.sleep_ns (Duration.of_day 1) >>= fun () ->
+          on_update ~old:(Dns_server.Secondary.data !dns_state) !dns_state >>= fun () ->
+          forever ()
+        in
+        forever ());
+    DS.secondary ~on_update stack !dns_state ;
+    S.listen stack
 end

@@ -43,7 +43,7 @@ let keys = Key.[
 
 let packages =
   [
-    package ~min:"0.13.0" "x509";
+    package ~min:"0.15.2" "x509";
     package "duration";
     package "logs";
     package ~min:"4.0.0" "cohttp-mirage";
@@ -55,7 +55,7 @@ let packages =
     package ~min:"5.0.0" ~sublibs:[ "mirage" ] "dns-server";
     package "randomconv";
     package ~min:"0.3.0" "domain-name";
-    package ~min:"4.0.0" "mirage-runtime";
+    package ~min:"4.3.1" "mirage-runtime";
 ]
 
 let client =
