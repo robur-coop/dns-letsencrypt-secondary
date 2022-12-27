@@ -137,7 +137,7 @@ module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.
              Lwt.return_error (`Msg "couldn't reach authoritative nameserver")
          | Some f ->
            D.send_tcp (D.flow f) data >>= function
-           | Error () -> flow := None ; send (not again)
+           | Error () -> flow := None ; send again
            | Ok () -> Lwt.return_ok ()
        in
        send true),
