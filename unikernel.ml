@@ -187,7 +187,6 @@ module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.
         add_flight tlsa_name;
         (* request new cert in async *)
         Lwt.async (fun () ->
-            (* may get rid of it, once our AXFR with the challenge has been received by us, ask for the cert! :) *)
             let sleep n = T.sleep_ns (Duration.of_sec n) in
             let now () = Ptime.v (P.now_d_ps ()) in
             let id = Randomconv.int16 R.generate in
@@ -312,15 +311,8 @@ module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.
     let on_update ~old:_ t =
       dns_state := t;
       (* what to do here?
-         foreach _changed_ TLSA record (can as well just do all for now)
-         - if it starts with _letsencrypt._tcp (needs domain_name API)
-         - if we have an update key for this zone
-         - look whether there's 1 CSR and 0 CERT, and act
-         --> can be achieved by fold, but how to extract "update key for zone"?
-         -> data structure update_keys is a map zone -> (keyname, dnskey)
-         -> for a TLSA (_letsencrypt._tcp.<host>):
-         -> let zone = drop two labels
-         -> lookup zone in update_keys, rinse repeat with zone dropping labels *)
+         foreach TLSA record (can as well just do all for now), check whether
+         there is a CSR without a valid certificate: if not, request a certificate *)
       let trie = Dns_server.Secondary.data t in
       Dns_trie.fold Dns.Rr_map.Tlsa trie
         (fun name (_, tlsas) () ->
