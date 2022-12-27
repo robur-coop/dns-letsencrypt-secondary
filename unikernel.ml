@@ -150,6 +150,11 @@ module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.
          | Ok data -> Ok data
          | Error () -> Error (`Msg "error while reading from flow"))
 
+  module Cstruct_set = Set.Make (struct
+      type t = Cstruct.t
+      let compare = Cstruct.compare
+    end)
+
   let request_certificate stack (keyname, keyzone, dnskey) server le ctx ~tlsa_name csr =
     if mem_flight tlsa_name then
       Logs.err (fun m -> m "request with %a already in-flight"
@@ -171,6 +176,7 @@ module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.
             Lwt.return_unit
           | Ok [] ->
             Logs.err (fun m -> m "received an empty certificate chain for %a" Domain_name.pp tlsa_name);
+            remove_flight tlsa_name;
             Lwt.return_unit
           | Ok (cert::cas) ->
             Logs.info (fun m -> m "certificate received for %a" Domain_name.pp tlsa_name);
@@ -184,27 +190,24 @@ module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.
               (* from tlsas, we need to remove the end entity certificates *)
               (* also potentially all CAs that are not part of cas *)
               (* we should add the new certificate and potentially CAs *)
-              let cas' = List.map X509.Certificate.encode_der cas in
-              let to_remove, cas_not_to_add =
-                Rr_map.Tlsa_set.fold (fun tlsa (to_rm, not_to_add) ->
+              let ca_set = Cstruct_set.of_list (List.map X509.Certificate.encode_der cas) in
+              let to_remove, cas_to_add =
+                Rr_map.Tlsa_set.fold (fun tlsa (to_rm, to_add) ->
                     if Dns_certify.is_ca_certificate tlsa then
-                      if List.mem tlsa.Tlsa.data cas' then
-                        to_rm, tlsa.Tlsa.data :: not_to_add
+                      if Cstruct_set.mem tlsa.Tlsa.data to_add then
+                        to_rm, Cstruct_set.remove tlsa.Tlsa.data to_add
                       else
-                        tlsa :: to_rm, not_to_add
+                        tlsa :: to_rm, to_add
                     else if Dns_certify.is_certificate tlsa then
-                      tlsa :: to_rm, not_to_add
+                      tlsa :: to_rm, to_add
                     else
-                      to_rm, not_to_add)
-                  tlsas ([], [])
+                      to_rm, to_add)
+                  tlsas ([], ca_set)
               in
               let update =
                 let add =
                   let tlsas =
-                    let cas_to_add =
-                      List.filter (fun ca -> not (List.mem ca cas_not_to_add)) cas'
-                    in
-                    let cas = List.map Dns_certify.ca_certificate cas_to_add in
+                    let cas = List.map Dns_certify.ca_certificate (Cstruct_set.elements cas_to_add) in
                     Rr_map.Tlsa_set.of_list (Dns_certify.certificate cert :: cas)
                   in
                   Packet.Update.Add Rr_map.(B (Tlsa, (3600l, tlsas)))
@@ -228,7 +231,6 @@ module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.
               | Ok (data, mac) ->
                 send_dns stack data >>= function
                 | Error (`Msg e) ->
-                  (* TODO: should retry DNS send *)
                   remove_flight tlsa_name;
                   Logs.err (fun m -> m "error %s while sending nsupdate %a"
                                e Domain_name.pp tlsa_name);
@@ -236,7 +238,6 @@ module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.
                 | Ok () ->
                   recv_dns () >|= function
                   | Error (`Msg e) ->
-                    (* TODO: should retry DNS send *)
                     remove_flight tlsa_name;
                     Logs.err (fun m -> m "error %s while reading DNS %a"
                                  e Domain_name.pp tlsa_name)
