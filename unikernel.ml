@@ -105,6 +105,157 @@ module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.
                      Domain_name.pp name);
         None
 
+  let mem_flight, add_flight, remove_flight =
+    (* TODO use a map with number of attempts *)
+    let in_flight = ref Domain_name.Set.empty in
+    (fun x -> Domain_name.Set.mem x !in_flight),
+    (fun n ->
+       Logs.info (fun m -> m "adding %a to in_flight" Domain_name.pp n);
+       in_flight := Domain_name.Set.add n !in_flight),
+    (fun n ->
+       Logs.info (fun m -> m "removing %a from in_flight" Domain_name.pp n);
+       in_flight := Domain_name.Set.remove n !in_flight)
+
+  let send_dns, recv_dns =
+    let flow = ref None in
+    (fun stack data ->
+       let dns_server = Key_gen.dns_server ()
+       and port = Key_gen.port ()
+       in
+       Logs.debug (fun m -> m "writing to %a" Ipaddr.pp dns_server) ;
+       let tcp = S.tcp stack in
+       let rec send again =
+         match !flow with
+         | None ->
+           if again then
+             S.TCP.create_connection tcp (dns_server, port) >>= function
+             | Error e ->
+               Logs.err (fun m -> m "failed to create connection to NS: %a" S.TCP.pp_error e) ;
+               Lwt.return (Error (`Msg (Fmt.to_to_string S.TCP.pp_error e)))
+             | Ok f -> flow := Some (D.of_flow f) ; send false
+           else
+             Lwt.return_error (`Msg "couldn't reach authoritative nameserver")
+         | Some f ->
+           D.send_tcp (D.flow f) data >>= function
+           | Error () -> flow := None ; send (not again)
+           | Ok () -> Lwt.return_ok ()
+       in
+       send true),
+    (fun () ->
+       (* we expect a single reply! *)
+       match !flow with
+       | None -> Lwt.return_error (`Msg "no TCP flow")
+       | Some f ->
+         D.read_tcp f >|= function
+         | Ok data -> Ok data
+         | Error () -> Error (`Msg "error while reading from flow"))
+
+  let request_certificate stack (keyname, keyzone, dnskey) server le ctx ~tlsa_name csr =
+    if mem_flight tlsa_name then
+      Logs.err (fun m -> m "request with %a already in-flight"
+                   Domain_name.pp tlsa_name)
+    else begin
+      Logs.info (fun m -> m "running let's encrypt service for %a"
+                    Domain_name.pp tlsa_name);
+      add_flight tlsa_name;
+      (* request new cert in async *)
+      Lwt.async (fun () ->
+          let sleep n = T.sleep_ns (Duration.of_sec n) in
+          let now () = Ptime.v (P.now_d_ps ()) in
+          let id = Randomconv.int16 R.generate in
+          let solver = Letsencrypt_dns.nsupdate ~proto:`Tcp id now (send_dns stack) ~recv:recv_dns ~zone:keyzone ~keyname dnskey in
+          Acme.sign_certificate ~ctx solver le sleep csr >>= function
+          | Error (`Msg e) ->
+            Logs.err (fun m -> m "error %s while signing %a" e Domain_name.pp tlsa_name);
+            remove_flight tlsa_name;
+            Lwt.return_unit
+          | Ok [] ->
+            Logs.err (fun m -> m "received an empty certificate chain for %a" Domain_name.pp tlsa_name);
+            Lwt.return_unit
+          | Ok (cert::cas) ->
+            Logs.info (fun m -> m "certificate received for %a" Domain_name.pp tlsa_name);
+            match Dns_trie.lookup tlsa_name Rr_map.Tlsa (Dns_server.Secondary.data server) with
+            | Error e ->
+              Logs.err (fun m -> m "lookup error for tlsa %a: %a (expected the signing request!)"
+                           Domain_name.pp tlsa_name Dns_trie.pp_e e);
+              remove_flight tlsa_name;
+              Lwt.return_unit
+            | Ok (_, tlsas) ->
+              (* from tlsas, we need to remove the end entity certificates *)
+              (* also potentially all CAs that are not part of cas *)
+              (* we should add the new certificate and potentially CAs *)
+              let cas' = List.map X509.Certificate.encode_der cas in
+              let to_remove, cas_not_to_add =
+                Rr_map.Tlsa_set.fold (fun tlsa (to_rm, not_to_add) ->
+                    if Dns_certify.is_ca_certificate tlsa then
+                      if List.mem tlsa.Tlsa.data cas' then
+                        to_rm, tlsa.Tlsa.data :: not_to_add
+                      else
+                        tlsa :: to_rm, not_to_add
+                    else if Dns_certify.is_certificate tlsa then
+                      tlsa :: to_rm, not_to_add
+                    else
+                      to_rm, not_to_add)
+                  tlsas ([], [])
+              in
+              let update =
+                let add =
+                  let tlsas =
+                    let cas_to_add =
+                      List.filter (fun ca -> not (List.mem ca cas_not_to_add)) cas'
+                    in
+                    let cas = List.map Dns_certify.ca_certificate cas_to_add in
+                    Rr_map.Tlsa_set.of_list (Dns_certify.certificate cert :: cas)
+                  in
+                  Packet.Update.Add Rr_map.(B (Tlsa, (3600l, tlsas)))
+                and remove =
+                  List.map (fun tlsa ->
+                      Packet.Update.Remove_single Rr_map.(B (Tlsa, (0l, Tlsa_set.singleton tlsa))))
+                    to_remove
+                in
+                let update = Domain_name.Map.singleton tlsa_name (remove @ [ add ]) in
+                (Domain_name.Map.empty, update)
+              and zone = Packet.Question.create keyzone Rr_map.Soa
+              and header = (Randomconv.int16 R.generate, Packet.Flags.empty)
+              in
+              let packet = Packet.create header zone (`Update update) in
+              match Dns_tsig.encode_and_sign ~proto:`Tcp packet (now ()) dnskey keyname with
+              | Error s ->
+                remove_flight tlsa_name;
+                Logs.err (fun m -> m "Error %a while encoding and signing %a"
+                             Dns_tsig.pp_s s Domain_name.pp tlsa_name);
+                Lwt.return_unit
+              | Ok (data, mac) ->
+                send_dns stack data >>= function
+                | Error (`Msg e) ->
+                  (* TODO: should retry DNS send *)
+                  remove_flight tlsa_name;
+                  Logs.err (fun m -> m "error %s while sending nsupdate %a"
+                               e Domain_name.pp tlsa_name);
+                  Lwt.return_unit
+                | Ok () ->
+                  recv_dns () >|= function
+                  | Error (`Msg e) ->
+                    (* TODO: should retry DNS send *)
+                    remove_flight tlsa_name;
+                    Logs.err (fun m -> m "error %s while reading DNS %a"
+                                 e Domain_name.pp tlsa_name)
+                  | Ok data ->
+                    remove_flight tlsa_name;
+                    match Dns_tsig.decode_and_verify (now ()) dnskey keyname ~mac data with
+                    | Error e ->
+                      Logs.err (fun m -> m "error %a while decoding nsupdate answer %a"
+                                   Dns_tsig.pp_e e Domain_name.pp tlsa_name)
+                    | Ok (res, _, _) ->
+                      match Packet.reply_matches_request ~request:packet res with
+                      | Ok _ -> ()
+                      | Error e ->
+                        (* TODO: if badtime, adjust our time (to the other time) and resend ;) *)
+                        Logs.err (fun m -> m "invalid reply %a for %a, got %a"
+                                     Packet.pp_mismatch e Packet.pp packet
+                                     Packet.pp res))
+    end
+
   let start _random _pclock _mclock _ stack ctx =
     let keyname, keyzone, dnskey =
       let keyname, dnskey =
@@ -122,168 +273,10 @@ module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.
       Logs.app (fun m -> m "using key %a for zone %a" Domain_name.pp keyname Domain_name.pp zone);
       keyname, zone, dnskey
     in
-    let dns_server = Key_gen.dns_server () in
     let dns_state = ref
-        (Dns_server.Secondary.create ~primary:dns_server ~rng:R.generate
+        (Dns_server.Secondary.create ~primary:(Key_gen.dns_server ()) ~rng:R.generate
            ~tsig_verify:Dns_tsig.verify ~tsig_sign:Dns_tsig.sign [ keyname, dnskey ])
     in
-    (* we actually need to find the zones for which we have update keys
-       (secondary logic cares about zone transfer key) *)
-    let flow = ref None in
-    let send_dns data =
-      Logs.debug (fun m -> m "writing to %a" Ipaddr.pp dns_server) ;
-      let tcp = S.tcp stack in
-      let rec send again =
-        match !flow with
-        | None ->
-          if again then
-            S.TCP.create_connection tcp (dns_server, Key_gen.port ()) >>= function
-            | Error e ->
-              Logs.err (fun m -> m "failed to create connection to NS: %a" S.TCP.pp_error e) ;
-              Lwt.return (Error (`Msg (Fmt.to_to_string S.TCP.pp_error e)))
-            | Ok f -> flow := Some (D.of_flow f) ; send false
-          else
-            Lwt.return_error (`Msg "couldn't reach authoritative nameserver")
-        | Some f ->
-          D.send_tcp (D.flow f) data >>= function
-          | Error () -> flow := None ; send (not again)
-          | Ok () -> Lwt.return_ok ()
-      in
-      send true
-    and recv_dns () =
-      (* we expect a single reply! *)
-      match !flow with
-      | None -> Lwt.return_error (`Msg "no TCP flow")
-      | Some f ->
-        D.read_tcp f >|= function
-        | Ok data -> Ok data
-        | Error () -> Error (`Msg "error while reading from flow")
-    in
-
-    let mem_flight, add_flight, remove_flight =
-      (* TODO use a map with number of attempts *)
-      let in_flight = ref Domain_name.Set.empty in
-      (fun x -> Domain_name.Set.mem x !in_flight),
-      (fun n ->
-         Logs.info (fun m -> m "adding %a to in_flight" Domain_name.pp n);
-         in_flight := Domain_name.Set.add n !in_flight ;
-         Logs.debug (fun m -> m "in_flight is %a"
-                        Fmt.(list ~sep:(any ",@ ") Domain_name.pp)
-                        (Domain_name.Set.elements !in_flight))),
-      (fun n ->
-         Logs.info (fun m -> m "removing %a from in_flight" Domain_name.pp n);
-         in_flight := Domain_name.Set.remove n !in_flight ;
-         Logs.debug (fun m -> m "in_flight is %a"
-                        Fmt.(list ~sep:(any ",@ ") Domain_name.pp)
-                        (Domain_name.Set.elements !in_flight)))
-    in
-    let request_certificate server le ctx ~tlsa_name csr =
-      if mem_flight tlsa_name then
-        Logs.err (fun m -> m "request with %a already in-flight"
-                     Domain_name.pp tlsa_name)
-      else begin
-        Logs.info (fun m -> m "running let's encrypt service for %a"
-                      Domain_name.pp tlsa_name);
-        add_flight tlsa_name;
-        (* request new cert in async *)
-        Lwt.async (fun () ->
-            let sleep n = T.sleep_ns (Duration.of_sec n) in
-            let now () = Ptime.v (P.now_d_ps ()) in
-            let id = Randomconv.int16 R.generate in
-            let solver = Letsencrypt_dns.nsupdate ~proto:`Tcp id now send_dns ~recv:recv_dns ~zone:keyzone ~keyname dnskey in
-            Acme.sign_certificate ~ctx solver le sleep csr >>= function
-            | Error (`Msg e) ->
-              Logs.err (fun m -> m "error %s while signing %a" e Domain_name.pp tlsa_name);
-              remove_flight tlsa_name;
-              Lwt.return_unit
-            | Ok [] ->
-              Logs.err (fun m -> m "received an empty certificate chain for %a" Domain_name.pp tlsa_name);
-              Lwt.return_unit
-            | Ok (cert::cas) ->
-              Logs.info (fun m -> m "certificate received for %a" Domain_name.pp tlsa_name);
-              match Dns_trie.lookup tlsa_name Rr_map.Tlsa (Dns_server.Secondary.data server) with
-              | Error e ->
-                Logs.err (fun m -> m "lookup error for tlsa %a: %a (expected the signing request!)"
-                             Domain_name.pp tlsa_name Dns_trie.pp_e e);
-                remove_flight tlsa_name;
-                Lwt.return_unit
-              | Ok (_, tlsas) ->
-                (* from tlsas, we need to remove the end entity certificates *)
-                (* also potentially all CAs that are not part of cas *)
-                (* we should add the new certificate and potentially CAs *)
-                let cas' = List.map X509.Certificate.encode_der cas in
-                let to_remove, cas_not_to_add =
-                  Rr_map.Tlsa_set.fold (fun tlsa (to_rm, not_to_add) ->
-                      if Dns_certify.is_ca_certificate tlsa then
-                        if List.mem tlsa.Tlsa.data cas' then
-                          to_rm, tlsa.Tlsa.data :: not_to_add
-                        else
-                          tlsa :: to_rm, not_to_add
-                      else if Dns_certify.is_certificate tlsa then
-                        tlsa :: to_rm, not_to_add
-                      else
-                        to_rm, not_to_add)
-                    tlsas ([], [])
-                in
-                let update =
-                  let add =
-                    let tlsas =
-                      let cas_to_add =
-                        List.filter (fun ca -> not (List.mem ca cas_not_to_add)) cas'
-                      in
-                      let cas = List.map Dns_certify.ca_certificate cas_to_add in
-                      Rr_map.Tlsa_set.of_list (Dns_certify.certificate cert :: cas)
-                    in
-                    Packet.Update.Add Rr_map.(B (Tlsa, (3600l, tlsas)))
-                  and remove =
-                    List.map (fun tlsa ->
-                        Packet.Update.Remove_single Rr_map.(B (Tlsa, (0l, Tlsa_set.singleton tlsa))))
-                      to_remove
-                  in
-                  let update = Domain_name.Map.singleton tlsa_name (remove @ [ add ]) in
-                  (Domain_name.Map.empty, update)
-                and zone = Packet.Question.create keyzone Rr_map.Soa
-                and header = (Randomconv.int16 R.generate, Packet.Flags.empty)
-                in
-                let packet = Packet.create header zone (`Update update) in
-                match Dns_tsig.encode_and_sign ~proto:`Tcp packet (now ()) dnskey keyname with
-                | Error s ->
-                  remove_flight tlsa_name;
-                  Logs.err (fun m -> m "Error %a while encoding and signing %a"
-                               Dns_tsig.pp_s s Domain_name.pp tlsa_name);
-                  Lwt.return_unit
-                | Ok (data, mac) ->
-                  send_dns data >>= function
-                  | Error (`Msg e) ->
-                    (* TODO: should retry DNS send *)
-                    remove_flight tlsa_name;
-                    Logs.err (fun m -> m "error %s while sending nsupdate %a"
-                                 e Domain_name.pp tlsa_name);
-                    Lwt.return_unit
-                  | Ok () ->
-                    recv_dns () >|= function
-                    | Error (`Msg e) ->
-                      (* TODO: should retry DNS send *)
-                      remove_flight tlsa_name;
-                      Logs.err (fun m -> m "error %s while reading DNS %a"
-                                   e Domain_name.pp tlsa_name)
-                    | Ok data ->
-                      remove_flight tlsa_name;
-                      match Dns_tsig.decode_and_verify (now ()) dnskey keyname ~mac data with
-                      | Error e ->
-                        Logs.err (fun m -> m "error %a while decoding nsupdate answer %a"
-                                     Dns_tsig.pp_e e Domain_name.pp tlsa_name)
-                      | Ok (res, _, _) ->
-                        match Packet.reply_matches_request ~request:packet res with
-                        | Ok _ -> ()
-                        | Error e ->
-                          (* TODO: if badtime, adjust our time (to the other time) and resend ;) *)
-                          Logs.err (fun m -> m "invalid reply %a for %a, got %a"
-                                       Packet.pp_mismatch e Packet.pp packet
-                                       Packet.pp res))
-      end
-    in
-
     let account_key =
       let key_type =
         err_to_exit
@@ -307,7 +300,6 @@ module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.
     Acme.initialise ~ctx ~endpoint ?email account_key >>= fun r ->
     let le = err_to_exit ~prefix:"couldn't initialize ACME" r in
     Logs.info (fun m -> m "initialised lets encrypt");
-
     let on_update ~old:_ t =
       dns_state := t;
       (* what to do here?
@@ -319,12 +311,11 @@ module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.
            if Dns_certify.is_name name then
              match contains_csr_without_certificate name tlsas with
              | None -> Logs.debug (fun m -> m "not interesting (does not contain CSR without valid certificate) %a" Domain_name.pp name)
-             | Some csr -> request_certificate t le ctx ~tlsa_name:name csr
+             | Some csr -> request_certificate stack (keyname, keyzone, dnskey) t le ctx ~tlsa_name:name csr
            else
              Logs.debug (fun m -> m "name not interesting %a" Domain_name.pp name)) ();
       Lwt.return_unit
     in
-
     Lwt.async (fun () ->
         let rec forever () =
           T.sleep_ns (Duration.of_day 1) >>= fun () ->
