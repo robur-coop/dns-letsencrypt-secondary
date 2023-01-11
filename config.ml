@@ -51,6 +51,7 @@ let packages =
     package "dns-tsig";
     package ~min:"5.0.1" "dns-certify";
     package ~min:"5.0.0" ~sublibs:[ "mirage" ] "dns-server";
+    package ~min:"6.4.0" ~sublibs:[ "mirage" ] "dns-client";
     package "randomconv";
     package ~min:"0.3.0" "domain-name";
     package ~min:"4.3.2" "mirage-runtime";
@@ -59,11 +60,9 @@ let packages =
 
 let client =
   foreign ~keys ~packages "Unikernel.Client" @@
-  random @-> pclock @-> mclock @-> time @-> stackv4v6 @-> mimic @-> job
+  random @-> pclock @-> mclock @-> time @-> stackv4v6 @-> job
 
 let () =
   let net = generic_stackv4v6 default_network in
-  let dns = generic_dns_client net in
-  let mimic = mimic_happy_eyeballs net dns (generic_happy_eyeballs net dns) in
   register "letsencrypt"
-    [ client $ default_random $ default_posix_clock $ default_monotonic_clock $ default_time $ net $ mimic ]
+    [ client $ default_random $ default_posix_clock $ default_monotonic_clock $ default_time $ net ]

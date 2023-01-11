@@ -10,11 +10,15 @@ let err_to_exit ~prefix = function
     Logs.err (fun m -> m "error in %s: %s" prefix msg);
     exit Mirage_runtime.argument_error
 
-module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.MCLOCK) (T : Mirage_time.S) (S : Tcpip.Stack.V4V6) (_: sig end) = struct
+module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.MCLOCK) (T : Mirage_time.S) (S : Tcpip.Stack.V4V6) = struct
   module Acme = LE.Make(T)(S)
+
+  module DNS = Dns_client_mirage.Make(R)(T)(M)(P)(S)
 
   module D = Dns_mirage.Make(S)
   module DS = Dns_server_mirage.Make(P)(M)(T)(S)
+
+  module Nss = Ca_certs_nss.Make(P)
 
   (* act as a hidden dns secondary and receive notifies, sweep through the zone for signing requests without corresponding (non-expired) certificate
 
@@ -246,7 +250,7 @@ module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.
                                      Packet.pp res))
     end
 
-  let start _random _pclock _mclock _ stack ctx =
+  let start _random _pclock _mclock _ stack =
     let keyname, keyzone, dnskey =
       let keyname, dnskey =
         err_to_exit ~prefix:"couldn't parse dnskey"
@@ -287,6 +291,16 @@ module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.
       end
     in
     let email = Key_gen.email () in
+    let ctx =
+      let gethostbyname dns domain_name =
+        DNS.gethostbyname dns domain_name >|= function
+        | Error _ as e -> e
+        | Ok ipv4 -> Ok (Ipaddr.V4 ipv4)
+      in
+      Acme.ctx ~gethostbyname
+        ~authenticator:(Result.get_ok (Nss.authenticator ()))
+        (DNS.create stack) stack
+    in
     Acme.initialise ~ctx ~endpoint ?email account_key >>= fun r ->
     let le = err_to_exit ~prefix:"couldn't initialize ACME" r in
     Logs.info (fun m -> m "initialised lets encrypt");
