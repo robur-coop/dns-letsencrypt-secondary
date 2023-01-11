@@ -54,8 +54,7 @@ let packages =
     package "randomconv";
     package ~min:"0.3.0" "domain-name";
     package ~min:"4.3.2" "mirage-runtime";
-    package "paf";
-    package "httpaf";
+    package ~min:"0.4.0" "paf-le";
 ]
 
 let client =
