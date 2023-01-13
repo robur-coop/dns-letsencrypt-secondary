@@ -43,28 +43,26 @@ let keys = Key.[
 
 let packages =
   [
-    package ~min:"0.13.0" "x509";
+    package ~min:"0.15.2" "x509";
     package "duration";
     package "logs";
-    package ~min:"4.0.0" "cohttp-mirage";
     package ~min:"0.4.0" "letsencrypt" ;
     package ~min:"0.4.0" "letsencrypt-dns" ;
-    package ~min:"5.0.0" "conduit-mirage";
     package "dns-tsig";
     package ~min:"5.0.1" "dns-certify";
     package ~min:"5.0.0" ~sublibs:[ "mirage" ] "dns-server";
+    package ~min:"6.4.0" ~sublibs:[ "mirage" ] "dns-client";
     package "randomconv";
     package ~min:"0.3.0" "domain-name";
-    package ~min:"4.0.0" "mirage-runtime";
+    package ~min:"4.3.2" "mirage-runtime";
+    package ~min:"0.4.0" "paf-le";
 ]
 
 let client =
   foreign ~keys ~packages "Unikernel.Client" @@
-  random @-> pclock @-> mclock @-> time @-> stackv4v6 @-> http_client @-> job
+  random @-> pclock @-> mclock @-> time @-> stackv4v6 @-> job
 
 let () =
   let net = generic_stackv4v6 default_network in
-  let res_dns = resolver_dns net in
-  let conduit = conduit_direct ~tls:true net in
   register "letsencrypt"
-    [ client $ default_random $ default_posix_clock $ default_monotonic_clock $ default_time $ net $ cohttp_client res_dns conduit ]
+    [ client $ default_random $ default_posix_clock $ default_monotonic_clock $ default_time $ net ]
