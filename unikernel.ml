@@ -10,7 +10,7 @@ let err_to_exit ~prefix = function
     Logs.err (fun m -> m "error in %s: %s" prefix msg);
     exit Mirage_runtime.argument_error
 
-module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.MCLOCK) (T : Mirage_time.S) (S : Tcpip.Stack.V4V6) = struct
+module Client (C : Mirage_console.S) (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.MCLOCK) (T : Mirage_time.S) (S : Tcpip.Stack.V4V6) (Management : Tcpip.Stack.V4V6) = struct
   module Acme = LE.Make(T)(S)
 
   module DNS = Dns_client_mirage.Make(R)(T)(M)(P)(S)
@@ -19,6 +19,13 @@ module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.
   module DS = Dns_server_mirage.Make(P)(M)(T)(S)
 
   module Nss = Ca_certs_nss.Make(P)
+
+  let inc =
+    let counters =
+      Mirage_monitoring.counter_metrics ~f:(fun x -> x) "letsencrypt"
+    in
+    fun name ->
+      Metrics.add counters (fun x -> x) (fun d -> d name)
 
   (* act as a hidden dns secondary and receive notifies, sweep through the zone for signing requests without corresponding (non-expired) certificate
 
@@ -149,6 +156,7 @@ module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.
     end)
 
   let request_certificate stack (keyname, keyzone, dnskey) server le ctx ~tlsa_name csr =
+    inc "requesting certificate";
     if mem_flight tlsa_name then
       Logs.err (fun m -> m "request with %a already in-flight"
                    Domain_name.pp tlsa_name)
@@ -172,6 +180,7 @@ module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.
             remove_flight tlsa_name;
             Lwt.return_unit
           | Ok (cert::cas) ->
+            inc "provisioned certificate";
             Logs.info (fun m -> m "certificate received for %a" Domain_name.pp tlsa_name);
             match Dns_trie.lookup tlsa_name Rr_map.Tlsa (Dns_server.Secondary.data server) with
             | Error e ->
@@ -242,7 +251,7 @@ module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.
                                    Dns_tsig.pp_e e Domain_name.pp tlsa_name)
                     | Ok (res, _, _) ->
                       match Packet.reply_matches_request ~request:packet res with
-                      | Ok _ -> ()
+                      | Ok _ -> inc "uploaded certificate"
                       | Error e ->
                         (* TODO: if badtime, adjust our time (to the other time) and resend ;) *)
                         Logs.err (fun m -> m "invalid reply %a for %a, got %a"
@@ -250,7 +259,17 @@ module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.
                                      Packet.pp res))
     end
 
-  let start _random _pclock _mclock _ stack =
+  module Monitoring = Mirage_monitoring.Make(T)(P)(Management)
+  module Syslog = Logs_syslog_mirage.Udp(C)(P)(Management)
+
+  let start c _random _pclock _mclock _ stack management =
+    let hostname = Key_gen.name () in
+    (match Key_gen.syslog () with
+     | None -> Logs.warn (fun m -> m "no syslog specified, dumping on stdout")
+     | Some ip -> Logs.set_reporter (Syslog.create c management ip ~hostname ()));
+    (match Key_gen.monitor () with
+     | None -> Logs.warn (fun m -> m "no monitor specified, not outputting statistics")
+     | Some ip -> Monitoring.create ~hostname ip management);
     let keyname, keyzone, dnskey =
       let keyname, dnskey =
         err_to_exit ~prefix:"couldn't parse dnskey"
@@ -305,6 +324,7 @@ module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.
     let le = err_to_exit ~prefix:"couldn't initialize ACME" r in
     Logs.info (fun m -> m "initialised lets encrypt");
     let on_update ~old:_ t =
+      inc "on update";
       dns_state := t;
       (* what to do here?
          foreach TLSA record (can as well just do all for now), check whether
