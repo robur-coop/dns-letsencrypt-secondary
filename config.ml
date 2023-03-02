@@ -34,24 +34,11 @@ let email =
   let doc = Key.Arg.info ~doc:"Contact eMail address for let's encrypt" ["email"] in
   Key.(create "email" Arg.(opt (some string) None doc))
 
-let monitor =
-  let doc = Key.Arg.info ~doc:"monitor host IP" ["monitor"] in
-  Key.(create "monitor" Arg.(opt (some ip_address) None doc))
-
-let syslog =
-  let doc = Key.Arg.info ~doc:"syslog host IP" ["syslog"] in
-  Key.(create "syslog" Arg.(opt (some ip_address) None doc))
-
-let name =
-  let doc = Key.Arg.info ~doc:"Name of the unikernel" ["name"] in
-  Key.(create "name" Arg.(opt string "sn.nqsb.io" doc))
-
 let keys = [
   Key.v dns_key ; Key.v dns_server ; Key.v port ;
   Key.v production ;
   Key.v account_key_seed ; Key.v account_key_type ;
   Key.v account_bits ; Key.v email ;
-  Key.v name ; Key.v syslog ; Key.v monitor ;
 ]
 
 let packages =
@@ -69,17 +56,85 @@ let packages =
     package ~min:"0.3.0" "domain-name";
     package ~min:"4.3.2" "mirage-runtime";
     package ~min:"0.4.0" "paf-le";
-    package ~sublibs:["mirage"] ~min:"0.3.0" "logs-syslog";
-    package "mirage-monitoring";
 ]
-
-let management_stack = generic_stackv4v6 ~group:"management" (netif ~group:"management" "management")
 
 let client =
   foreign ~keys ~packages "Unikernel.Client" @@
-  console @-> random @-> pclock @-> mclock @-> time @-> stackv4v6 @-> stackv4v6 @-> job
+  random @-> pclock @-> mclock @-> time @-> stackv4v6 @-> job
+
+let enable_monitoring =
+  let doc = Key.Arg.info
+      ~doc:"Enable monitoring (only available for solo5 targets)"
+      [ "enable-monitoring" ]
+  in
+  Key.(create "enable-monitoring" Arg.(flag ~stage:`Configure doc))
+
+let stack = generic_stackv4v6 default_network
+
+let management_stack =
+  if_impl
+    (Key.value enable_monitoring)
+    (generic_stackv4v6 ~group:"management" (netif ~group:"management" "management"))
+    stack
+
+let name =
+  let doc = Key.Arg.info ~doc:"Name of the unikernel" [ "name" ] in
+  Key.(v (create "name" Arg.(opt string "le.robur.coop" doc)))
+
+let monitoring =
+  let monitor =
+    let doc = Key.Arg.info ~doc:"monitor host IP" ["monitor"] in
+    Key.(v (create "monitor" Arg.(opt (some ip_address) None doc)))
+  in
+  let connect _ modname = function
+    | [ _ ; _ ; stack ] ->
+      Fmt.str "Lwt.return (match %a with\
+               | None -> Logs.warn (fun m -> m \"no monitor specified, not outputting statistics\")\
+               | Some ip -> %s.create ip ~hostname:%a %s)"
+        Key.serialize_call monitor modname
+        Key.serialize_call name stack
+    | _ -> assert false
+  in
+  impl
+    ~packages:[ package "mirage-monitoring" ]
+    ~keys:[ name ; monitor ]
+    ~connect "Mirage_monitoring.Make"
+    (time @-> pclock @-> stackv4v6 @-> job)
+
+let syslog =
+  let syslog =
+    let doc = Key.Arg.info ~doc:"syslog host IP" ["syslog"] in
+    Key.(v (create "syslog" Arg.(opt (some ip_address) None doc)))
+  in
+  let connect _ modname = function
+    | [ console ; _ ; stack ] ->
+      Fmt.str "Lwt.return (match %a with\
+               | None -> Logs.warn (fun m -> m \"no syslog specified, dumping on stdout\")\
+               | Some ip -> Logs.set_reporter (%s.create %s %s ip ~hostname:%a ()))"
+        Key.serialize_call syslog modname console stack
+        Key.serialize_call name
+    | _ -> assert false
+  in
+  impl
+    ~packages:[ package ~sublibs:["mirage"] ~min:"0.3.0" "logs-syslog" ]
+    ~keys:[ name ; syslog ]
+    ~connect "Logs_syslog_mirage.Udp"
+    (console @-> pclock @-> stackv4v6 @-> job)
+
+let optional_monitoring time pclock stack =
+  if_impl (Key.value enable_monitoring)
+    (monitoring $ time $ pclock $ stack)
+    noop
+
+let optional_syslog console pclock stack =
+  if_impl (Key.value enable_monitoring)
+    (syslog $ console $ pclock $ stack)
+    noop
 
 let () =
-  let net = generic_stackv4v6 default_network in
   register "letsencrypt"
-    [ client $ default_console $ default_random $ default_posix_clock $ default_monotonic_clock $ default_time $ net $ management_stack ]
+    [
+      optional_syslog default_console default_posix_clock management_stack ;
+      optional_monitoring default_time default_posix_clock management_stack ;
+      client $ default_random $ default_posix_clock $ default_monotonic_clock $ default_time $ stack
+    ]

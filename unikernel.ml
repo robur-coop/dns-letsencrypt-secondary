@@ -10,7 +10,7 @@ let err_to_exit ~prefix = function
     Logs.err (fun m -> m "error in %s: %s" prefix msg);
     exit Mirage_runtime.argument_error
 
-module Client (C : Mirage_console.S) (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.MCLOCK) (T : Mirage_time.S) (S : Tcpip.Stack.V4V6) (Management : Tcpip.Stack.V4V6) = struct
+module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.MCLOCK) (T : Mirage_time.S) (S : Tcpip.Stack.V4V6) = struct
   module Acme = LE.Make(T)(S)
 
   module DNS = Dns_client_mirage.Make(R)(T)(M)(P)(S)
@@ -21,11 +21,31 @@ module Client (C : Mirage_console.S) (R : Mirage_random.S) (P : Mirage_clock.PCL
   module Nss = Ca_certs_nss.Make(P)
 
   let inc =
-    let counters =
-      Mirage_monitoring.counter_metrics ~f:(fun x -> x) "letsencrypt"
+    let create ~f =
+      let data : (string, int) Hashtbl.t = Hashtbl.create 7 in
+      (fun x ->
+         let key = f x in
+         let cur = match Hashtbl.find_opt data key with
+           | None -> 0
+           | Some x -> x
+         in
+         Hashtbl.replace data key (succ cur)),
+      (fun () ->
+         let data, total =
+           Hashtbl.fold (fun key value (acc, total) ->
+               (Metrics.uint key value :: acc), value + total)
+             data ([], 0)
+         in
+         Metrics.uint "total" total :: data)
     in
-    fun name ->
-      Metrics.add counters (fun x -> x) (fun d -> d name)
+    let src =
+      let open Metrics in
+      let doc = "Counter metrics" in
+      let incr, get = create ~f:Fun.id in
+      let data thing = incr thing; Data.v (get ()) in
+      Src.v ~doc ~tags:Metrics.Tags.[] ~data "letsencrypt"
+    in
+    (fun r -> Metrics.add src (fun x -> x) (fun d -> d r))
 
   (* act as a hidden dns secondary and receive notifies, sweep through the zone for signing requests without corresponding (non-expired) certificate
 
@@ -259,17 +279,7 @@ module Client (C : Mirage_console.S) (R : Mirage_random.S) (P : Mirage_clock.PCL
                                      Packet.pp res))
     end
 
-  module Monitoring = Mirage_monitoring.Make(T)(P)(Management)
-  module Syslog = Logs_syslog_mirage.Udp(C)(P)(Management)
-
-  let start c _random _pclock _mclock _ stack management =
-    let hostname = Key_gen.name () in
-    (match Key_gen.syslog () with
-     | None -> Logs.warn (fun m -> m "no syslog specified, dumping on stdout")
-     | Some ip -> Logs.set_reporter (Syslog.create c management ip ~hostname ()));
-    (match Key_gen.monitor () with
-     | None -> Logs.warn (fun m -> m "no monitor specified, not outputting statistics")
-     | Some ip -> Monitoring.create ~hostname ip management);
+  let start _random _pclock _mclock _ stack =
     let keyname, keyzone, dnskey =
       let keyname, dnskey =
         err_to_exit ~prefix:"couldn't parse dnskey"
