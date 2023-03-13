@@ -51,16 +51,16 @@ let packages =
     package "dns-tsig";
     package ~min:"5.0.1" "dns-certify";
     package ~min:"5.0.0" ~sublibs:[ "mirage" ] "dns-server";
-    package ~min:"6.4.0" ~sublibs:[ "mirage" ] "dns-client";
+    package ~min:"6.4.0" "dns-client-mirage";
     package "randomconv";
     package ~min:"0.3.0" "domain-name";
     package ~min:"4.3.2" "mirage-runtime";
-    package ~min:"0.4.0" "paf-le";
+    package "letsencrypt-mirage";
 ]
 
 let client =
   foreign ~keys ~packages "Unikernel.Client" @@
-  random @-> pclock @-> mclock @-> time @-> stackv4v6 @-> job
+  random @-> pclock @-> mclock @-> time @-> stackv4v6 @-> alpn_client @-> job
 
 let enable_monitoring =
   let doc = Key.Arg.info
@@ -70,6 +70,14 @@ let enable_monitoring =
   Key.(create "enable-monitoring" Arg.(flag ~stage:`Configure doc))
 
 let stack = generic_stackv4v6 default_network
+
+let dns = generic_dns_client stack
+
+let alpn_client =
+  let dns =
+    mimic_happy_eyeballs stack dns (generic_happy_eyeballs stack dns)
+  in
+  paf_client (tcpv4v6_of_stackv4v6 stack) dns
 
 let management_stack =
   if_impl
@@ -136,5 +144,5 @@ let () =
     [
       optional_syslog default_console default_posix_clock management_stack ;
       optional_monitoring default_time default_posix_clock management_stack ;
-      client $ default_random $ default_posix_clock $ default_monotonic_clock $ default_time $ stack
+      client $ default_random $ default_posix_clock $ default_monotonic_clock $ default_time $ stack $ alpn_client
     ]

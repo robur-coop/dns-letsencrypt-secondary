@@ -10,7 +10,7 @@ let err_to_exit ~prefix = function
     Logs.err (fun m -> m "error in %s: %s" prefix msg);
     exit Mirage_runtime.argument_error
 
-module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.MCLOCK) (T : Mirage_time.S) (S : Tcpip.Stack.V4V6) = struct
+module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.MCLOCK) (T : Mirage_time.S) (S : Tcpip.Stack.V4V6) (HTTP : Http_mirage_client.S) = struct
   module Acme = LE.Make(T)(S)
 
   module DNS = Dns_client_mirage.Make(R)(T)(M)(P)(S)
@@ -279,7 +279,7 @@ module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.
                                      Packet.pp res))
     end
 
-  let start _random _pclock _mclock _ stack =
+  let start _random _pclock _mclock _ stack http_client =
     let keyname, keyzone, dnskey =
       let keyname, dnskey =
         err_to_exit ~prefix:"couldn't parse dnskey"
@@ -320,17 +320,7 @@ module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.
       end
     in
     let email = Key_gen.email () in
-    let ctx =
-      let gethostbyname dns domain_name =
-        DNS.gethostbyname dns domain_name >|= function
-        | Error _ as e -> e
-        | Ok ipv4 -> Ok (Ipaddr.V4 ipv4)
-      in
-      Acme.ctx ~gethostbyname
-        ~authenticator:(Result.get_ok (Nss.authenticator ()))
-        (DNS.create stack) stack
-    in
-    Acme.initialise ~ctx ~endpoint ?email account_key >>= fun r ->
+    Acme.initialise ~ctx:http_client ~endpoint ?email account_key >>= fun r ->
     let le = err_to_exit ~prefix:"couldn't initialize ACME" r in
     Logs.info (fun m -> m "initialised lets encrypt");
     let on_update ~old:_ t =
@@ -345,7 +335,7 @@ module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.
            if Dns_certify.is_name name then
              match contains_csr_without_certificate name tlsas with
              | None -> Logs.debug (fun m -> m "not interesting (does not contain CSR without valid certificate) %a" Domain_name.pp name)
-             | Some csr -> request_certificate stack (keyname, keyzone, dnskey) t le ctx ~tlsa_name:name csr
+             | Some csr -> request_certificate stack (keyname, keyzone, dnskey) t le http_client ~tlsa_name:name csr
            else
              Logs.debug (fun m -> m "name not interesting %a" Domain_name.pp name)) ();
       Lwt.return_unit
