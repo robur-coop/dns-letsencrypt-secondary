@@ -7,7 +7,7 @@ ACME DNS challenge to retrieve certificates. The certificate chain is stored
 in DNS as TLSA record as well. This unikernel also ensures that certificates
 are valid for at least two weeks.
 
-This can be used with [dns-primary-git](https://github.com/roburio/dns-primary-git).
+This can be used with [dns-primary-git](https://github.com/robur-coop/dns-primary-git).
 
 ## Installation from source
 
@@ -20,7 +20,7 @@ To install this unikernel from source, you need to have
 The following steps will clone this git repository and compile the unikernel:
 
 ```bash
-$ git clone https://github.com/roburio/dns-letsencrypt-secondary.git
+$ git clone https://github.com/robur-coop/dns-letsencrypt-secondary.git
 $ mirage configure -t <your-favourite-target>
 $ make depend
 $ mirage build
