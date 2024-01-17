@@ -2,44 +2,7 @@
 
 open Mirage
 
-let dns_key =
-  let doc = Key.Arg.info ~doc:"nsupdate key (name:type:value,...)" ["dns-key"] in
-  Key.(create "dns-key" Arg.(required string doc))
-
-let dns_server =
-  let doc = Key.Arg.info ~doc:"dns server IP" ["dns-server"] in
-  Key.(create "dns-server" Arg.(required ip_address doc))
-
-let port =
-  let doc = Key.Arg.info ~doc:"dns server port" ["port"] in
-  Key.(create "port" Arg.(opt int 53 doc))
-
-let production =
-  let doc = Key.Arg.info ~doc:"Use the production let's encrypt servers" ["production"] in
-  Key.(create "production" Arg.(flag doc))
-
-let account_key_seed =
-  let doc = Key.Arg.info ~doc:"account key seed" ["account-key-seed"] in
-  Key.(create "account-key-seed" Arg.(required string doc))
-
-let account_key_type =
-  let doc = Key.Arg.info ~doc:"account key type" ["account-key-type"] in
-  Key.(create "account-key-type" Arg.(opt string "RSA" doc))
-
-let account_bits =
-  let doc = Key.Arg.info ~doc:"account public key bits" ["account-bits"] in
-  Key.(create "account-bits" Arg.(opt int 4096 doc))
-
-let email =
-  let doc = Key.Arg.info ~doc:"Contact eMail address for let's encrypt" ["email"] in
-  Key.(create "email" Arg.(opt (some string) None doc))
-
-let keys = [
-  Key.v dns_key ; Key.v dns_server ; Key.v port ;
-  Key.v production ;
-  Key.v account_key_seed ; Key.v account_key_type ;
-  Key.v account_bits ; Key.v email ;
-]
+let setup = runtime_arg ~pos:__POS__ "Unikernel.K.setup"
 
 let packages =
   [
@@ -59,7 +22,7 @@ let packages =
 ]
 
 let client =
-  foreign ~keys ~packages "Unikernel.Client" @@
+  main ~runtime_args:[setup] ~packages ~pos:__POS__ "Unikernel.Client" @@
   random @-> pclock @-> mclock @-> time @-> stackv4v6 @-> alpn_client @-> job
 
 let enable_monitoring =
@@ -67,7 +30,7 @@ let enable_monitoring =
       ~doc:"Enable monitoring (only available for solo5 targets)"
       [ "enable-monitoring" ]
   in
-  Key.(create "enable-monitoring" Arg.(flag ~stage:`Configure doc))
+  Key.(create "enable-monitoring" Arg.(flag doc))
 
 let stack = generic_stackv4v6 default_network
 
@@ -86,55 +49,44 @@ let management_stack =
     stack
 
 let name =
-  let doc = Key.Arg.info ~doc:"Name of the unikernel" [ "name" ] in
-  Key.(v (create "name" Arg.(opt string "le.robur.coop" doc)))
+  runtime_arg ~pos:__POS__ ~name:"name"
+    {|let open Cmdliner in
+      let doc = Arg.info ~doc:"Name of the unikernel" [ "name" ] in
+      Arg.(value & opt string "le.robur.coop" doc)|}
 
 let monitoring =
-  let monitor =
-    let doc = Key.Arg.info ~doc:"monitor host IP" ["monitor"] in
-    Key.(v (create "monitor" Arg.(opt (some ip_address) None doc)))
-  in
+  let monitor = Runtime_arg.(v (monitor None)) in
   let connect _ modname = function
-    | [ _ ; _ ; stack ] ->
-      Fmt.str "Lwt.return (match %a with\
+    | [ _ ; _ ; stack; name; monitor ] ->
+      code ~pos:__POS__ "Lwt.return (match %s with\
                | None -> Logs.warn (fun m -> m \"no monitor specified, not outputting statistics\")\
-               | Some ip -> %s.create ip ~hostname:%a %s)"
-        Key.serialize_call monitor modname
-        Key.serialize_call name stack
+               | Some ip -> %s.create ip ~hostname:%s %s)"
+        monitor modname name stack
     | _ -> assert false
   in
   impl
     ~packages:[ package "mirage-monitoring" ]
-    ~keys:[ name ; monitor ]
+    ~runtime_args:[ name ; monitor ]
     ~connect "Mirage_monitoring.Make"
     (time @-> pclock @-> stackv4v6 @-> job)
 
 let syslog =
-  let syslog =
-    let doc = Key.Arg.info ~doc:"syslog host IP" ["syslog"] in
-    Key.(v (create "syslog" Arg.(opt (some ip_address) None doc)))
-  in
+  let syslog = Runtime_arg.(v (syslog None)) in
   let connect _ modname = function
-    | [ _ ; stack ] ->
-      Fmt.str "Lwt.return (match %a with\
+    | [ _ ; stack; name; syslog ] ->
+      code ~pos:__POS__ "Lwt.return (match %s with\
                | None -> Logs.warn (fun m -> m \"no syslog specified, dumping on stdout\")\
-               | Some ip -> Logs.set_reporter (%s.create %s ip ~hostname:%a ()))"
-        Key.serialize_call syslog modname stack
-        Key.serialize_call name
+               | Some ip -> Logs.set_reporter (%s.create %s ip ~hostname:%s ()))"
+        syslog modname stack name
     | _ -> assert false
   in
   impl
     ~packages:[ package ~sublibs:["mirage"] ~min:"0.4.0" "logs-syslog" ]
-    ~keys:[ name ; syslog ]
+    ~runtime_args:[ name ; syslog ]
     ~connect "Logs_syslog_mirage.Udp"
     (pclock @-> stackv4v6 @-> job)
 
-type i0 = I0
-let i0 = Functoria.Type.v I0
 let no0 = Functoria.impl "Int" job
-
-type n1 = N1
-let n1 = Functoria.Type.v N1
 let noop1 = Functoria.impl "Set.Make" (job @-> job)
 
 let optional_monitoring time pclock stack =
