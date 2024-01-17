@@ -1,5 +1,66 @@
 (* (c) 2018 Hannes Mehnert, all rights reserved *)
 
+module K = struct
+  open Cmdliner
+
+  let key =
+    Arg.conv ~docv:"HOST:HASH:DATA" Dns.Dnskey.(name_key_of_string, pp_name_key)
+
+  let ip =
+    Arg.conv ~docv:"IP" (Ipaddr.of_string, Ipaddr.pp)
+
+  let dns_key =
+    let doc = Arg.info ~doc:"nsupdate key (name:type:value,...)" ["dns-key"] in
+    Arg.(required & opt (some key) None doc)
+
+  let dns_server =
+    let doc = Arg.info ~doc:"dns server IP" ["dns-server"] in
+    Arg.(required & opt (some ip) None doc)
+
+  let port =
+    let doc = Arg.info ~doc:"dns server port" ["port"] in
+    Arg.(value & opt int 53 doc)
+
+  let production =
+    let doc = Arg.info ~doc:"Use the production let's encrypt servers" ["production"] in
+    Arg.(value & flag doc)
+
+  let account_key_seed =
+    let doc = Arg.info ~doc:"account key seed" ["account-key-seed"] in
+    Arg.(required & opt (some string) None doc)
+
+  let account_key_type =
+    let doc = Arg.info ~doc:"account key type" ["account-key-type"] in
+    Arg.(value & opt (enum X509.Key_type.strings) `RSA doc)
+
+  let account_bits =
+    let doc = Arg.info ~doc:"account public key bits" ["account-bits"] in
+    Arg.(value & opt int 4096 doc)
+
+  let email =
+    let doc = Arg.info ~doc:"Contact eMail address for let's encrypt" ["email"] in
+    Arg.(value & opt (some string) None doc)
+
+  type t = {
+      dns_key: [ `raw ] Domain_name.t * Dns.Dnskey.t;
+      dns_server : Ipaddr.t;
+      port: int;
+      production: bool;
+      account_key_seed: string;
+      account_key_type: X509.Key_type.t;
+      account_bits: int;
+      email: string option;
+    }
+
+  let setup =
+    Term.(const(fun dns_key dns_server port production account_key_seed
+                    account_key_type account_bits email ->
+              {dns_key; dns_server; port; production; account_key_seed;
+               account_key_type; account_bits; email })
+          $ dns_key $ dns_server $ port $ production $ account_key_seed
+          $ account_key_type $ account_bits $ email )
+end
+
 open Lwt.Infix
 
 open Dns
@@ -136,12 +197,9 @@ module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.
        Logs.info (fun m -> m "removing %a from in_flight" Domain_name.pp n);
        in_flight := Domain_name.Set.remove n !in_flight)
 
-  let send_dns, recv_dns =
+  let dns_pipe dns_server port =
     let flow = ref None in
     (fun stack data ->
-       let dns_server = Key_gen.dns_server ()
-       and port = Key_gen.port ()
-       in
        Logs.debug (fun m -> m "writing to %a" Ipaddr.pp dns_server) ;
        let tcp = S.tcp stack in
        let rec send again =
@@ -175,7 +233,8 @@ module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.
       let compare = Cstruct.compare
     end)
 
-  let request_certificate stack (keyname, keyzone, dnskey) server le ctx ~tlsa_name csr =
+  let request_certificate stack (keyname, keyzone, dnskey) (send_dns, recv_dns)
+        server le ctx ~tlsa_name csr =
     inc "requesting certificate";
     if mem_flight tlsa_name then
       Logs.err (fun m -> m "request with %a already in-flight"
@@ -279,12 +338,11 @@ module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.
                                      Packet.pp res))
     end
 
-  let start _random _pclock _mclock _ stack http_client =
+  let start _random _pclock _mclock _ stack http_client
+        { K.dns_key; dns_server; port; production; account_key_seed;
+          account_key_type; account_bits; email } =
     let keyname, keyzone, dnskey =
-      let keyname, dnskey =
-        err_to_exit ~prefix:"couldn't parse dnskey"
-          (Dnskey.name_key_of_string (Key_gen.dns_key ()))
-      in
+      let keyname, dnskey = dns_key in
       let idx =
         err_to_exit ~prefix:"dnskey is not an update key"
           (Option.to_result
@@ -297,21 +355,16 @@ module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.
       keyname, zone, dnskey
     in
     let dns_state = ref
-        (Dns_server.Secondary.create ~primary:(Key_gen.dns_server ()) ~rng:R.generate
+        (Dns_server.Secondary.create ~primary:dns_server ~rng:R.generate
            ~tsig_verify:Dns_tsig.verify ~tsig_sign:Dns_tsig.sign [ keyname, dnskey ])
     in
     let account_key =
-      let key_type =
-        err_to_exit
-          ~prefix:"cannot decode key type"
-          (X509.Key_type.of_string (Key_gen.account_key_type ()))
-      in
       err_to_exit
         ~prefix:"couldn't generate account key"
-        (X509.Private_key.of_string ~bits:(Key_gen.account_bits ()) key_type (Key_gen.account_key_seed ()))
+        (X509.Private_key.of_string ~bits:account_bits account_key_type account_key_seed)
     in
     let endpoint =
-      if Key_gen.production () then begin
+      if production then begin
         Logs.warn (fun m -> m "production environment - take care what you do");
         Letsencrypt.letsencrypt_production_url
       end else begin
@@ -319,7 +372,6 @@ module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.
         Letsencrypt.letsencrypt_staging_url
       end
     in
-    let email = Key_gen.email () in
     Acme.initialise ~ctx:http_client ~endpoint ?email account_key >>= fun r ->
     let le = err_to_exit ~prefix:"couldn't initialize ACME" r in
     Logs.info (fun m -> m "initialised lets encrypt");
@@ -335,7 +387,10 @@ module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.
            if Dns_certify.is_name name then
              match contains_csr_without_certificate name tlsas with
              | None -> Logs.debug (fun m -> m "not interesting (does not contain CSR without valid certificate) %a" Domain_name.pp name)
-             | Some csr -> request_certificate stack (keyname, keyzone, dnskey) t le http_client ~tlsa_name:name csr
+             | Some csr -> request_certificate stack
+                             (keyname, keyzone, dnskey)
+                             (dns_pipe dns_server port)
+                             t le http_client ~tlsa_name:name csr
            else
              Logs.debug (fun m -> m "name not interesting %a" Domain_name.pp name)) ();
       Lwt.return_unit
