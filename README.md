@@ -14,7 +14,7 @@ This can be used with [dns-primary-git](https://github.com/robur-coop/dns-primar
 To install this unikernel from source, you need to have
 [opam](https://opam.ocaml.org) (>= 2.1.0) and
 [ocaml](https://ocaml.org) (>= 4.08.0) installed. Also,
-[mirage](https://mirageos.org) is required (>= 4.0.0). Please follow the
+[mirage](https://mirageos.org) is required (>= 4.5.0). Please follow the
 [installation instructions](https://mirageos.org/wiki/install).
 
 The following steps will clone this git repository and compile the unikernel:
@@ -23,7 +23,7 @@ The following steps will clone this git repository and compile the unikernel:
 $ git clone https://github.com/robur-coop/dns-letsencrypt-secondary.git
 $ mirage configure -t <your-favourite-target>
 $ make depend
-$ mirage build
+$ make build
 ```
 
 ## Installing as binary

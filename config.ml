@@ -1,4 +1,4 @@
-(* mirage >= 4.4.2 & < 4.5.0 *)
+(* mirage >= 4.5.0 & < 4.6.0 *)
 (* (c) 2018 Hannes Mehnert, all rights reserved *)
 
 open Mirage
@@ -49,19 +49,21 @@ let management_stack =
     (generic_stackv4v6 ~group:"management" (netif ~group:"management" "management"))
     stack
 
+let docs = "MONITORING PARAMETERS"
+
 let name =
   runtime_arg ~pos:__POS__ ~name:"name"
-    {|let open Cmdliner in
-      let doc = Arg.info ~doc:"Name of the unikernel" [ "name" ] in
-      Arg.(value & opt string "le.robur.coop" doc)|}
+    {|(let doc = Cmdliner.Arg.info ~doc:"Name of the unikernel" ~docs:%S [ "name" ] in
+       Cmdliner.Arg.(value & opt string "a.ns.robur.coop" doc))|} docs
 
 let monitoring =
-  let monitor = Runtime_arg.(v (monitor None)) in
+  let monitor = Runtime_arg.(v (monitor ~docs None)) in
   let connect _ modname = function
-    | [ _ ; _ ; stack; name; monitor ] ->
-      code ~pos:__POS__ "Lwt.return (match %s with\
-               | None -> Logs.warn (fun m -> m \"no monitor specified, not outputting statistics\")\
-               | Some ip -> %s.create ip ~hostname:%s %s)"
+    | [ _ ; _ ; stack ; name ; monitor ] ->
+      code ~pos:__POS__
+        "Lwt.return (match %s with\
+         | None -> Logs.warn (fun m -> m \"no monitor specified, not outputting statistics\")\
+         | Some ip -> %s.create ip ~hostname:%s %s)"
         monitor modname name stack
     | _ -> assert false
   in
@@ -72,12 +74,13 @@ let monitoring =
     (time @-> pclock @-> stackv4v6 @-> job)
 
 let syslog =
-  let syslog = Runtime_arg.(v (syslog None)) in
+  let syslog = Runtime_arg.(v (syslog ~docs None)) in
   let connect _ modname = function
-    | [ _ ; stack; name; syslog ] ->
-      code ~pos:__POS__ "Lwt.return (match %s with\
-               | None -> Logs.warn (fun m -> m \"no syslog specified, dumping on stdout\")\
-               | Some ip -> Logs.set_reporter (%s.create %s ip ~hostname:%s ()))"
+    | [ _ ; stack ; name ; syslog ] ->
+      code ~pos:__POS__
+        "Lwt.return (match %s with\
+         | None -> Logs.warn (fun m -> m \"no syslog specified, dumping on stdout\")\
+         | Some ip -> Logs.set_reporter (%s.create %s ip ~hostname:%s ()))"
         syslog modname stack name
     | _ -> assert false
   in
