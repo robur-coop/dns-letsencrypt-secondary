@@ -1,4 +1,4 @@
-(* mirage >= 4.5.1 & < 4.6.0 *)
+(* mirage >= 4.7.0 & < 4.8.0 *)
 (* (c) 2018 Hannes Mehnert, all rights reserved *)
 
 open Mirage
@@ -35,13 +35,11 @@ let enable_monitoring =
 
 let stack = generic_stackv4v6 default_network
 
-let dns = generic_dns_client stack
-
 let alpn_client =
-  let dns =
-    mimic_happy_eyeballs stack dns (generic_happy_eyeballs stack dns)
-  in
-  paf_client (tcpv4v6_of_stackv4v6 stack) dns
+  let happy_eyeballs = generic_happy_eyeballs stack in
+  let dns = generic_dns_client stack happy_eyeballs in
+  let mimic = mimic_happy_eyeballs stack happy_eyeballs dns in
+  paf_client (tcpv4v6_of_stackv4v6 stack) mimic
 
 let management_stack =
   if_impl
