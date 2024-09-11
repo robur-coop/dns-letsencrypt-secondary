@@ -71,7 +71,7 @@ let err_to_exit ~prefix = function
     Logs.err (fun m -> m "error in %s: %s" prefix msg);
     exit Mirage_runtime.argument_error
 
-module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.MCLOCK) (T : Mirage_time.S) (S : Tcpip.Stack.V4V6) (HTTP : Http_mirage_client.S) = struct
+module Client (R : Mirage_crypto_rng_mirage.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.MCLOCK) (T : Mirage_time.S) (S : Tcpip.Stack.V4V6) (HTTP : Http_mirage_client.S) = struct
   module Acme = LE.Make(T)(S)
 
   module DNS = Dns_client_mirage.Make(R)(T)(M)(P)(S)
@@ -214,7 +214,7 @@ module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.
            else
              Lwt.return_error (`Msg "couldn't reach authoritative nameserver")
          | Some f ->
-           D.send_tcp (D.flow f) data >>= function
+           D.send_tcp (D.flow f) (Cstruct.of_string data) >>= function
            | Error () -> flow := None ; send again
            | Ok () -> Lwt.return_ok ()
        in
@@ -225,13 +225,10 @@ module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.
        | None -> Lwt.return_error (`Msg "no TCP flow")
        | Some f ->
          D.read_tcp f >|= function
-         | Ok data -> Ok data
+         | Ok data -> Ok (Cstruct.to_string data)
          | Error () -> Error (`Msg "error while reading from flow"))
 
-  module Cstruct_set = Set.Make (struct
-      type t = Cstruct.t
-      let compare = Cstruct.compare
-    end)
+  module String_set = Set.Make(String)
 
   let request_certificate stack (keyname, keyzone, dnskey) (send_dns, recv_dns)
         server le ctx ~tlsa_name csr =
@@ -271,12 +268,12 @@ module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.
               (* from tlsas, we need to remove the end entity certificates *)
               (* also potentially all CAs that are not part of cas *)
               (* we should add the new certificate and potentially CAs *)
-              let ca_set = Cstruct_set.of_list (List.map X509.Certificate.encode_der cas) in
+              let ca_set = String_set.of_list (List.map X509.Certificate.encode_der cas) in
               let to_remove, cas_to_add =
                 Rr_map.Tlsa_set.fold (fun tlsa (to_rm, to_add) ->
                     if Dns_certify.is_ca_certificate tlsa then
-                      if Cstruct_set.mem tlsa.Tlsa.data to_add then
-                        to_rm, Cstruct_set.remove tlsa.Tlsa.data to_add
+                      if String_set.mem tlsa.Tlsa.data to_add then
+                        to_rm, String_set.remove tlsa.Tlsa.data to_add
                       else
                         tlsa :: to_rm, to_add
                     else if Dns_certify.is_certificate tlsa then
@@ -288,7 +285,7 @@ module Client (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.
               let update =
                 let add =
                   let tlsas =
-                    let cas = List.map Dns_certify.ca_certificate (Cstruct_set.elements cas_to_add) in
+                    let cas = List.map Dns_certify.ca_certificate (String_set.elements cas_to_add) in
                     Rr_map.Tlsa_set.of_list (Dns_certify.certificate cert :: cas)
                   in
                   Packet.Update.Add Rr_map.(B (Tlsa, (3600l, tlsas)))
