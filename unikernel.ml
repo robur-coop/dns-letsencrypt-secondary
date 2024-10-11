@@ -53,12 +53,13 @@ module K = struct
     }
 
   let setup =
-    Term.(const(fun dns_key dns_server port production account_key_seed
-                    account_key_type account_bits email ->
-              {dns_key; dns_server; port; production; account_key_seed;
-               account_key_type; account_bits; email })
-          $ dns_key $ dns_server $ port $ production $ account_key_seed
-          $ account_key_type $ account_bits $ email )
+    Mirage_runtime.register_arg
+      Term.(const(fun dns_key dns_server port production account_key_seed
+                   account_key_type account_bits email ->
+                   {dns_key; dns_server; port; production; account_key_seed;
+                    account_key_type; account_bits; email })
+            $ dns_key $ dns_server $ port $ production $ account_key_seed
+            $ account_key_type $ account_bits $ email )
 end
 
 open Lwt.Infix
@@ -335,9 +336,11 @@ module Client (R : Mirage_crypto_rng_mirage.S) (P : Mirage_clock.PCLOCK) (M : Mi
                                      Packet.pp res))
     end
 
-  let start _random _pclock _mclock _ stack http_client
-        { K.dns_key; dns_server; port; production; account_key_seed;
+  let start _random _pclock _mclock _ stack http_client =
+    let { K.dns_key; dns_server; port; production; account_key_seed;
           account_key_type; account_bits; email } =
+      K.setup ()
+    in
     let keyname, keyzone, dnskey =
       let keyname, dnskey = dns_key in
       let idx =
