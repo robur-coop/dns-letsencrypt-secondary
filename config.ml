@@ -1,9 +1,7 @@
-(* mirage >= 4.7.0 & < 4.8.0 *)
+(* mirage >= 4.8.0 & < 4.9.0 *)
 (* (c) 2018 Hannes Mehnert, all rights reserved *)
 
 open Mirage
-
-let setup = runtime_arg ~pos:__POS__ "Unikernel.K.setup"
 
 let packages =
   [
@@ -23,7 +21,7 @@ let packages =
 ]
 
 let client =
-  main ~runtime_args:[setup] ~packages ~pos:__POS__ "Unikernel.Client" @@
+  main ~packages ~pos:__POS__ "Unikernel.Client" @@
   random @-> pclock @-> mclock @-> time @-> stackv4v6 @-> alpn_client @-> job
 
 let enable_monitoring =

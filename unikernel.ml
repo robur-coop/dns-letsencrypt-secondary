@@ -11,54 +11,35 @@ module K = struct
 
   let dns_key =
     let doc = Arg.info ~doc:"nsupdate key (name:type:value,...)" ["dns-key"] in
-    Arg.(required & opt (some key) None doc)
+    Mirage_runtime.register_arg Arg.(required & opt (some key) None doc)
 
   let dns_server =
     let doc = Arg.info ~doc:"dns server IP" ["dns-server"] in
-    Arg.(required & opt (some ip) None doc)
+    Mirage_runtime.register_arg Arg.(required & opt (some ip) None doc)
 
   let port =
     let doc = Arg.info ~doc:"dns server port" ["port"] in
-    Arg.(value & opt int 53 doc)
+    Mirage_runtime.register_arg Arg.(value & opt int 53 doc)
 
   let production =
     let doc = Arg.info ~doc:"Use the production let's encrypt servers" ["production"] in
-    Arg.(value & flag doc)
+    Mirage_runtime.register_arg Arg.(value & flag doc)
 
   let account_key_seed =
     let doc = Arg.info ~doc:"account key seed" ["account-key-seed"] in
-    Arg.(required & opt (some string) None doc)
+    Mirage_runtime.register_arg Arg.(required & opt (some string) None doc)
 
   let account_key_type =
     let doc = Arg.info ~doc:"account key type" ["account-key-type"] in
-    Arg.(value & opt (enum X509.Key_type.strings) `RSA doc)
+    Mirage_runtime.register_arg Arg.(value & opt (enum X509.Key_type.strings) `RSA doc)
 
   let account_bits =
     let doc = Arg.info ~doc:"account public key bits" ["account-bits"] in
-    Arg.(value & opt int 4096 doc)
+    Mirage_runtime.register_arg Arg.(value & opt int 4096 doc)
 
   let email =
     let doc = Arg.info ~doc:"Contact eMail address for let's encrypt" ["email"] in
-    Arg.(value & opt (some string) None doc)
-
-  type t = {
-      dns_key: [ `raw ] Domain_name.t * Dns.Dnskey.t;
-      dns_server : Ipaddr.t;
-      port: int;
-      production: bool;
-      account_key_seed: string;
-      account_key_type: X509.Key_type.t;
-      account_bits: int;
-      email: string option;
-    }
-
-  let setup =
-    Term.(const(fun dns_key dns_server port production account_key_seed
-                    account_key_type account_bits email ->
-              {dns_key; dns_server; port; production; account_key_seed;
-               account_key_type; account_bits; email })
-          $ dns_key $ dns_server $ port $ production $ account_key_seed
-          $ account_key_type $ account_bits $ email )
+    Mirage_runtime.register_arg Arg.(value & opt (some string) None doc)
 end
 
 open Lwt.Infix
@@ -335,11 +316,9 @@ module Client (R : Mirage_crypto_rng_mirage.S) (P : Mirage_clock.PCLOCK) (M : Mi
                                      Packet.pp res))
     end
 
-  let start _random _pclock _mclock _ stack http_client
-        { K.dns_key; dns_server; port; production; account_key_seed;
-          account_key_type; account_bits; email } =
+  let start _random _pclock _mclock _ stack http_client =
     let keyname, keyzone, dnskey =
-      let keyname, dnskey = dns_key in
+      let keyname, dnskey = K.dns_key () in
       let idx =
         err_to_exit ~prefix:"dnskey is not an update key"
           (Option.to_result
@@ -352,16 +331,17 @@ module Client (R : Mirage_crypto_rng_mirage.S) (P : Mirage_clock.PCLOCK) (M : Mi
       keyname, zone, dnskey
     in
     let dns_state = ref
-        (Dns_server.Secondary.create ~primary:dns_server ~rng:R.generate
+        (Dns_server.Secondary.create ~primary:(K.dns_server ()) ~rng:R.generate
            ~tsig_verify:Dns_tsig.verify ~tsig_sign:Dns_tsig.sign [ keyname, dnskey ])
     in
     let account_key =
       err_to_exit
         ~prefix:"couldn't generate account key"
-        (X509.Private_key.of_string ~bits:account_bits account_key_type account_key_seed)
+        (X509.Private_key.of_string ~bits:(K.account_bits ())
+           (K.account_key_type ()) (K.account_key_seed ()))
     in
     let endpoint =
-      if production then begin
+      if K.production () then begin
         Logs.warn (fun m -> m "production environment - take care what you do");
         Letsencrypt.letsencrypt_production_url
       end else begin
@@ -369,7 +349,7 @@ module Client (R : Mirage_crypto_rng_mirage.S) (P : Mirage_clock.PCLOCK) (M : Mi
         Letsencrypt.letsencrypt_staging_url
       end
     in
-    Acme.initialise ~ctx:http_client ~endpoint ?email account_key >>= fun r ->
+    Acme.initialise ~ctx:http_client ~endpoint ?email:(K.email ()) account_key >>= fun r ->
     let le = err_to_exit ~prefix:"couldn't initialize ACME" r in
     Logs.info (fun m -> m "initialised lets encrypt");
     let on_update ~old:_ t =
@@ -386,7 +366,7 @@ module Client (R : Mirage_crypto_rng_mirage.S) (P : Mirage_clock.PCLOCK) (M : Mi
              | None -> Logs.debug (fun m -> m "not interesting (does not contain CSR without valid certificate) %a" Domain_name.pp name)
              | Some csr -> request_certificate stack
                              (keyname, keyzone, dnskey)
-                             (dns_pipe dns_server port)
+                             (dns_pipe (K.dns_server ()) (K.port ()))
                              t le http_client ~tlsa_name:name csr
            else
              Logs.debug (fun m -> m "name not interesting %a" Domain_name.pp name)) ();
