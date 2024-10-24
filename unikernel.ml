@@ -4,7 +4,9 @@ module K = struct
   open Cmdliner
 
   let key =
-    Arg.conv ~docv:"HOST:HASH:DATA" Dns.Dnskey.(name_key_of_string, pp_name_key)
+    Arg.conv ~docv:"HOST:HASH:DATA"
+      Dns.Dnskey.(name_key_of_string,
+                  (fun ppf v -> Fmt.string ppf (name_key_to_string v)))
 
   let ip =
     Arg.conv ~docv:"IP" (Ipaddr.of_string, Ipaddr.pp)

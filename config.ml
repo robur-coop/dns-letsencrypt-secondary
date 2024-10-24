@@ -11,9 +11,9 @@ let packages =
     package ~min:"0.4.0" "letsencrypt" ;
     package ~min:"0.4.0" "letsencrypt-dns" ;
     package "dns-tsig";
-    package ~min:"5.0.1" "dns-certify";
-    package ~min:"5.0.0" ~sublibs:[ "mirage" ] "dns-server";
-    package ~min:"6.4.0" "dns-client-mirage";
+    package ~min:"9.1.0" "dns-certify";
+    package ~min:"9.1.0" ~sublibs:[ "mirage" ] "dns-server";
+    package ~min:"9.1.0" "dns-client-mirage";
     package "randomconv";
     package ~min:"0.3.0" "domain-name";
     package ~min:"4.3.2" "mirage-runtime";
