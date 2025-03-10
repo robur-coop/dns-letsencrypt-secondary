@@ -54,15 +54,13 @@ let err_to_exit ~prefix = function
     Logs.err (fun m -> m "error in %s: %s" prefix msg);
     exit Mirage_runtime.argument_error
 
-module Client (R : Mirage_crypto_rng_mirage.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.MCLOCK) (T : Mirage_time.S) (S : Tcpip.Stack.V4V6) (HTTP : Http_mirage_client.S) = struct
-  module Acme = LE.Make(T)(S)
+module Client (S : Tcpip.Stack.V4V6) (HTTP : Http_mirage_client.S) = struct
+  module Acme = LE.Make(S)
 
-  module DNS = Dns_client_mirage.Make(R)(T)(M)(P)(S)
+  module DNS = Dns_client_mirage.Make(S)
 
   module D = Dns_mirage.Make(S)
-  module DS = Dns_server_mirage.Make(P)(M)(T)(S)
-
-  module Nss = Ca_certs_nss.Make(P)
+  module DS = Dns_server_mirage.Make(S)
 
   let inc =
     let create ~f =
@@ -117,9 +115,9 @@ module Client (R : Mirage_crypto_rng_mirage.S) (P : Mirage_clock.PCLOCK) (M : Mi
     with
     | Ok csr, Ok cert ->
       let now_plus_two_weeks =
-        let (days, ps) = P.now_d_ps () in
+        let (days, ps) = Mirage_ptime.now_d_ps () in
         Ptime.v (days + 14, ps)
-      and now = Ptime.v (P.now_d_ps ())
+      and now = Mirage_ptime.now ()
       in
       if Dns_certify.cert_matches_csr ~until:now_plus_two_weeks now csr cert then
         None
@@ -225,9 +223,9 @@ module Client (R : Mirage_crypto_rng_mirage.S) (P : Mirage_clock.PCLOCK) (M : Mi
       add_flight tlsa_name;
       (* request new cert in async *)
       Lwt.async (fun () ->
-          let sleep n = T.sleep_ns (Duration.of_sec n) in
-          let now () = Ptime.v (P.now_d_ps ()) in
-          let id = Randomconv.int16 R.generate in
+          let sleep n = Mirage_sleep.ns (Duration.of_sec n) in
+          let now () = Mirage_ptime.now () in
+          let id = Randomconv.int16 Mirage_crypto_rng.generate in
           let solver = Letsencrypt_dns.nsupdate ~proto:`Tcp id now (send_dns stack) ~recv:recv_dns ~zone:keyzone ~keyname dnskey in
           Acme.sign_certificate ~ctx solver le sleep csr >>= function
           | Error (`Msg e) ->
@@ -280,7 +278,7 @@ module Client (R : Mirage_crypto_rng_mirage.S) (P : Mirage_clock.PCLOCK) (M : Mi
                 let update = Domain_name.Map.singleton tlsa_name (remove @ [ add ]) in
                 (Domain_name.Map.empty, update)
               and zone = Packet.Question.create keyzone Rr_map.Soa
-              and header = (Randomconv.int16 R.generate, Packet.Flags.empty)
+              and header = (Randomconv.int16 Mirage_crypto_rng.generate, Packet.Flags.empty)
               in
               let packet = Packet.create header zone (`Update update) in
               match Dns_tsig.encode_and_sign ~proto:`Tcp packet (now ()) dnskey keyname with
@@ -318,7 +316,7 @@ module Client (R : Mirage_crypto_rng_mirage.S) (P : Mirage_clock.PCLOCK) (M : Mi
                                      Packet.pp res))
     end
 
-  let start _random _pclock _mclock _ stack http_client =
+  let start stack http_client =
     let keyname, keyzone, dnskey =
       let keyname, dnskey = K.dns_key () in
       let idx =
@@ -333,7 +331,7 @@ module Client (R : Mirage_crypto_rng_mirage.S) (P : Mirage_clock.PCLOCK) (M : Mi
       keyname, zone, dnskey
     in
     let dns_state = ref
-        (Dns_server.Secondary.create ~primary:(K.dns_server ()) ~rng:R.generate
+        (Dns_server.Secondary.create ~primary:(K.dns_server ()) ~rng:Mirage_crypto_rng.generate
            ~tsig_verify:Dns_tsig.verify ~tsig_sign:Dns_tsig.sign [ keyname, dnskey ])
     in
     let account_key =
@@ -376,7 +374,7 @@ module Client (R : Mirage_crypto_rng_mirage.S) (P : Mirage_clock.PCLOCK) (M : Mi
     in
     Lwt.async (fun () ->
         let rec forever () =
-          T.sleep_ns (Duration.of_day 1) >>= fun () ->
+          Mirage_sleep.ns (Duration.of_day 1) >>= fun () ->
           on_update ~old:(Dns_server.Secondary.data !dns_state) !dns_state >>= fun () ->
           forever ()
         in
