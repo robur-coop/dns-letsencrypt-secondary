@@ -55,6 +55,9 @@ let err_to_exit ~prefix = function
   | Error `Msg msg ->
     Logs.err (fun m -> m "error in %s: %s" prefix msg);
     exit Mirage_runtime.argument_error
+  | Error `HTTP err ->
+    Logs.err (fun m -> m "error in %s: %a" prefix Mimic.pp_error err);
+    exit Mirage_runtime.argument_error
 
 module Client (S : Tcpip.Stack.V4V6) (HTTP : Http_mirage_client.S) = struct
   module Acme = LE.Make(S)
@@ -232,6 +235,10 @@ module Client (S : Tcpip.Stack.V4V6) (HTTP : Http_mirage_client.S) = struct
           Acme.sign_certificate ~ctx solver le sleep csr >>= function
           | Error (`Msg e) ->
             Logs.err (fun m -> m "error %s while signing %a" e Domain_name.pp tlsa_name);
+            remove_flight tlsa_name;
+            Lwt.return_unit
+          | Error (`HTTP e) ->
+            Logs.err (fun m -> m "error %a while signing %a" Mimic.pp_error e Domain_name.pp tlsa_name);
             remove_flight tlsa_name;
             Lwt.return_unit
           | Ok [] ->
