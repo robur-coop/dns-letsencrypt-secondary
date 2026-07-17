@@ -9,7 +9,7 @@ let packages =
     package "duration";
     package "logs";
     package ~min:"0.4.0" "letsencrypt" ;
-    package ~min:"0.4.0" "letsencrypt-dns" ;
+    package ~min:"2.0.0" "letsencrypt-dns" ;
     package "dns-tsig";
     package ~min:"9.1.0" "dns-certify";
     package ~min:"9.1.0" ~sublibs:[ "mirage" ] "dns-server";
