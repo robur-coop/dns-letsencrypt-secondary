@@ -48,6 +48,8 @@ open Lwt.Infix
 
 open Dns
 
+module Letsencrypt_dns = Letsencrypt_dns.Make(Lwt)
+
 let err_to_exit ~prefix = function
   | Ok x -> x
   | Error `Msg msg ->
